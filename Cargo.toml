@@ -1,0 +1,6 @@
+[package]
+name = "nesemu"
+version = "0.0.1"
+authors = ["Tomas Nilsson <tomas.nilsson@gmail.com>"]
+
+[dependencies]
