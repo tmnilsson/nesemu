@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-//use std::u8;
 use std::fs::File;
 use std::io::Read;
+use std::cell::RefCell;
 
 #[derive(Debug)]
 struct Registers {
@@ -40,11 +40,104 @@ enum AddressingMode {
     IndirectY,
 }
 
+struct Ppu {
+    scan_line: i16,
+    cycle_count: u16,
+    vblank : bool,
+    gen_nmi_at_vblank: bool,
+    mem_read_mut_enabled: bool,
+    ppu_addr: u16,
+    memory: Vec<u8>
+}
+
+impl Ppu {
+    fn new() -> Ppu {
+        Ppu {
+            scan_line: 0,
+            cycle_count: 0,
+            vblank: false,
+            gen_nmi_at_vblank: false,
+
+            mem_read_mut_enabled: true,
+            ppu_addr: 0,
+            memory: vec![0; 0x10000],
+        }
+    }
+
+    fn step_cycle(&mut self, count: u16) -> bool {
+        self.cycle_count += count * 3;
+        if self.cycle_count >= 341 {
+            self.cycle_count -= 341;
+            self.scan_line += 1;
+            if self.scan_line == 241 {
+                self.vblank = true;
+            }
+            if self.scan_line >= 261 {
+                self.scan_line = -1;
+                self.vblank = false;
+            }
+        }
+        let nmi_line = !(self.vblank && self.gen_nmi_at_vblank);
+        nmi_line
+    }
+
+    fn read_mem(&mut self, cpu_address: u16) -> u8 {
+        match cpu_address {
+            0x2000 | 0x2001 | 0x2005 | 0x2006 => { // Write-only registers, return 0
+                0
+            }
+            0x2002 => {
+                let value = if self.vblank {0x80} else {0x00};
+                if self.mem_read_mut_enabled {
+                    self.vblank = false;
+                    self.ppu_addr = 0;
+                }
+                value
+            }
+            0x2007 => {
+                let addr = self.ppu_addr;
+                self.read_mem_ppu(addr)
+            }
+            _ => panic!("Unimplemented read address: {:04X}", cpu_address)
+        }
+    }
+
+    fn write_mem(&mut self, cpu_address: u16, value: u8) {
+        match cpu_address {
+            0x2000 => {
+                if value != 0 && value != 0x80 && value != 0x84 {
+                    panic!("Unimplemented! {:02X}", value);
+                }
+                self.gen_nmi_at_vblank = (value & 0x80) != 0;
+            }
+            0x2001 | 0x2005 => {
+            }
+            0x2006 => {
+                self.ppu_addr = (self.ppu_addr << 8) + value as u16;
+            }
+            0x2007 => {
+                let addr = self.ppu_addr;
+                self.write_mem_ppu(addr, value);
+            }
+            _ => panic!("Unimplemented write address: {:04X}", cpu_address)
+        }
+    }
+
+    fn read_mem_ppu(&self, ppu_address: u16) -> u8 {
+        self.memory[ppu_address as usize]
+    }
+
+    fn write_mem_ppu(&mut self, ppu_address: u16, value: u8) {
+        self.memory[ppu_address as usize] = value;
+    }
+}
+
 pub struct Machine {
     reg: Registers,
     memory: Vec<u8>,
-    cycle_count: u16,
-    scan_line: i16,
+    ppu: RefCell<Ppu>,
+    nmi_line: bool,
+    nmi_triggered: bool,
     instructions: HashMap<u8, Instruction>,
 }
 
@@ -83,8 +176,9 @@ impl Machine {
         Machine {
             reg: Registers { pc:0, sp:0xfd, a:0, x:0, y:0, status:0x24 },
             memory: memory,
-            cycle_count: 0,
-            scan_line: 241,
+            nmi_line: true,
+            nmi_triggered: false,
+            ppu: RefCell::new(Ppu::new()),
             instructions: Machine::add_instructions(),
         }
     }
@@ -94,8 +188,21 @@ impl Machine {
             self.memory[0x8000..0xc000].clone_from_slice(&rom.prg_rom);
             self.memory[0xc000..0x10000].clone_from_slice(&rom.prg_rom);
         }
-        self.reg.pc = 0xc000;
-        self.cycle_count = 0;
+        self.reset();
+    }
+
+    pub fn reset(&mut self) {
+        self.perform_interrupt(0xffc, 0xffd, false);
+        self.reg.pc = ((self.read_mem(0xfffd) as u16) << 8) +
+            self.read_mem(0xfffc) as u16;
+    }
+
+    pub fn set_program_counter(&mut self, address: u16) {
+        self.reg.pc = address;
+    }
+
+    pub fn set_scan_line(&mut self, scan_line: i16) {
+        self.ppu.borrow_mut().scan_line = scan_line;
     }
 
     fn get_status_flag(&mut self, flag: StatusFlag) -> bool {
@@ -108,7 +215,8 @@ impl Machine {
                               self.reg.status, self.reg.sp);
         let instr_str = self.decode_instruction();
         format!("{:04X}  {}{} CYC:{:3} SL:{}",
-                self.reg.pc, instr_str, reg_str, self.cycle_count, self.scan_line)
+                self.reg.pc, instr_str, reg_str,
+                self.ppu.borrow().cycle_count, self.ppu.borrow().scan_line)
     }
 
     fn get_op(&self, op_index: u8) -> u8 {
@@ -120,6 +228,7 @@ impl Machine {
     }
 
     fn decode_instruction(&self) -> String {
+        self.ppu.borrow_mut().mem_read_mut_enabled = false;
         let op_code = self.read_mem(self.reg.pc);
         let instr = match self.instructions.get(&op_code) {
             Some(instr) => instr,
@@ -220,26 +329,34 @@ impl Machine {
                                        address, indirect_address, final_address, value);
             }
         }
+        self.ppu.borrow_mut().mem_read_mut_enabled = false;
         let result = format!("{:8} {:33}", code_str, disass_str);
         result
     }
 
     fn read_mem(&self, address: u16) -> u8 {
-        self.memory[address as usize]
+        if address >= 0x2000 && address < 0x2008 {
+            self.ppu.borrow_mut().read_mem(address)
+        }
+        else {
+            self.memory[address as usize]
+        }
     }
 
     fn write_mem(&mut self, address: u16, value: u8) {
-        self.memory[address as usize] = value;
+        if address >= 0x2000 && address < 0x2008 {
+            self.ppu.borrow_mut().write_mem(address, value);
+        }
+        else {
+            self.memory[address as usize] = value;
+        }
     }
 
     fn step_cycle(&mut self, count: u16) {
-        self.cycle_count += count * 3;
-        if self.cycle_count >= 341 {
-            self.cycle_count -= 341;
-            self.scan_line += 1;
-            if self.scan_line >= 261 {
-                self.scan_line = -1;
-            }
+        let old_nmi_line = self.nmi_line;
+        self.nmi_line = self.ppu.borrow_mut().step_cycle(count);
+        if old_nmi_line && !self.nmi_line {
+            self.nmi_triggered = true;
         }
     }
 
@@ -643,7 +760,33 @@ impl Machine {
         Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
     }
 
-    pub fn execute_instruction(&mut self) {
+    pub fn execute(&mut self) {
+        if self.nmi_triggered {
+            self.nmi_triggered = false;
+            self.perform_interrupt(0xfffa, 0xfffb, true);
+        }
+        else {
+            self.execute_instruction();
+        }
+    }
+
+    fn perform_interrupt(&mut self, pcl_addr: u16, pch_addr: u16, write_to_stack: bool) {
+        println!("performing interrupt!");
+        if write_to_stack {
+            let pch = (self.reg.pc >> 8) as u8;
+            let pcl = (self.reg.pc & 0xff) as u8;
+            self.push(pch);
+            self.push(pcl);
+            let status = self.reg.status;
+            self.push(status);
+        }
+        let pch = self.read_mem(pch_addr) as u16;
+        let pcl = self.read_mem(pcl_addr) as u16;
+        let new_pc = (pch << 8) + pcl;
+        self.reg.pc = new_pc;
+    }
+
+    fn execute_instruction(&mut self) {
         let op_code = self.read_mem(self.reg.pc);
         let addr_mode = self.instructions.get(&op_code).unwrap().addressing_mode.clone();
         match op_code {

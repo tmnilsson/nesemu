@@ -4,11 +4,12 @@ use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
 
-
 fn test_nestest_rom(verbose: bool) {
     let mut m = machine::Machine::new();
     let rom = machine::read_nes_file("nestest.nes");
     m.load_rom(rom);
+    m.set_program_counter(0xc000);
+    m.set_scan_line(241);
 
     let baseline = File::open("nestest.log")
         .expect("Unable to open nestest.log");
@@ -28,12 +29,12 @@ fn test_nestest_rom(verbose: bool) {
             break; // finished
         }
         if baseline_line != m.get_state_string() {
-            println!("Mismatch at line {}! Baseline:", line_no);
-            println!("{}", baseline_line);
+            assert!(false, "Mismatch at line {}!\n{}\nBaseline:\n{}\n",
+                    line_no, m.get_state_string(), baseline_line);
             break;
         }
 
-        m.execute_instruction();
+        m.execute();
         line_no += 1;
     }
 }
@@ -45,5 +46,12 @@ fn nestest_rom() {
 
 fn main()
 {
-    test_nestest_rom(true);
+    let mut m = machine::Machine::new();
+    let rom = machine::read_nes_file("nestest.nes");
+    m.load_rom(rom);
+
+    loop {
+        println!("{}", m.get_state_string());
+        m.execute();
+    }
 }
