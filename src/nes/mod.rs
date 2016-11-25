@@ -1,0 +1,112 @@
+mod ppu;
+pub mod cpu;
+
+use std::fs::File;
+use std::io::Read;
+use std::cell::RefCell;
+
+
+pub struct Machine {
+    pub ppu: RefCell<ppu::Ppu>,
+    memory: Vec<u8>,
+    nmi_line: bool,
+}
+
+
+pub fn get_state_string(cpu: &cpu::Cpu, machine: &mut Machine) -> String {
+    format!("{} {}", cpu.get_state_string(machine), machine.get_state_string())
+}
+
+
+impl Machine {
+    pub fn new() -> Self {
+        let mut memory = vec![0; 0x10000];
+        // Set I/O registers to FF
+        for i in 0x4000..0x4020 {
+            memory[i] = 0xFF;
+        }
+        Machine {
+            ppu: RefCell::new(ppu::Ppu::new()),
+            memory: memory,
+            nmi_line: true,
+        }
+    }
+
+    pub fn load_rom(&mut self, rom: NesRom) {
+        if rom.prg_rom.len() == 16384 {
+            self.memory[0x8000..0xc000].clone_from_slice(&rom.prg_rom);
+            self.memory[0xc000..0x10000].clone_from_slice(&rom.prg_rom);
+        }
+    }
+
+    pub fn set_scan_line(&mut self, scan_line: i16) {
+        self.ppu.borrow_mut().set_scan_line(scan_line);
+    }
+
+    pub fn get_state_string(&self) -> String {
+        format!("CYC:{:3} SL:{}",
+                self.ppu.borrow().cycle_count, self.ppu.borrow().scan_line)
+    }
+    
+    fn step_cycle(&mut self, count: u16) -> bool {
+        let old_nmi_line = self.nmi_line;
+        self.nmi_line = self.ppu.borrow_mut().step_cycle(count);
+        let nmi_triggered = old_nmi_line && !self.nmi_line;
+        nmi_triggered
+    }
+
+    fn read_mem(&self, address: u16) -> u8 {
+        if address >= 0x2000 && address < 0x2008 {
+            self.ppu.borrow_mut().read_mem(address)
+        }
+        else {
+            self.memory[address as usize]
+        }
+    }
+
+    fn write_mem(&mut self, address: u16, value: u8) {
+        if address >= 0x2000 && address < 0x2008 {
+            self.ppu.borrow_mut().write_mem(address, value);
+        }
+        else {
+            self.memory[address as usize] = value;
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct NesRom {
+    header: [u8; 16],
+    prg_rom: Vec<u8>,
+    chr_rom: Vec<u8>,
+}
+
+pub fn read_nes_file(path: &str) -> NesRom {
+    let mut data = Vec::new();
+    let mut f = File::open(path).expect("Unable to open file");
+    f.read_to_end(&mut data).expect("Unable to read data");
+
+    let mut header = [0; 16];
+    header.clone_from_slice(&data[0..16]);
+    let magic = "NES\x1a".as_bytes();
+    if &data[0..4] != magic {
+        panic!("Not a NES file");
+    }
+    let prg_rom_size_16kb_units = data[4];
+    let chr_rom_size_8kb_units = data[5];
+    let _flags6 = data[6];
+    let _has_trainer = data[6] & (1 << 2) == (1 << 2);
+    let _has_play_choice_rom = data[7] & (1 << 2) == (1 << 2);
+    let _prg_ram_size_8kb_units = data[8];
+
+    let prg_size = prg_rom_size_16kb_units as usize * 16384;
+    let chr_size = chr_rom_size_8kb_units as usize * 8192;
+    let mut prg_rom = vec![0; prg_size];
+    prg_rom.clone_from_slice(&data[16 .. 16 + prg_size]);
+    let mut chr_rom = vec![0; chr_size];
+    chr_rom.clone_from_slice(&data[16 + prg_size .. 16 + prg_size + chr_size]);
+
+    NesRom { header: header,
+             prg_rom: prg_rom,
+             chr_rom: chr_rom }
+}

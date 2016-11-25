@@ -1,16 +1,14 @@
+use nes::Machine;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
-use std::cell::RefCell;
 
 #[derive(Debug)]
 struct Registers {
-    pc : u16,
-    sp : u8,
-    a : u8,
-    x : u8,
-    y : u8,
-    status : u8,
+    pc: u16,
+    sp: u8,
+    a: u8,
+    x: u8,
+    y: u8,
+    status: u8,
 }
 
 enum StatusFlag {
@@ -40,105 +38,10 @@ enum AddressingMode {
     IndirectY,
 }
 
-struct Ppu {
-    scan_line: i16,
-    cycle_count: u16,
-    vblank : bool,
-    gen_nmi_at_vblank: bool,
-    mem_read_mut_enabled: bool,
-    ppu_addr: u16,
-    memory: Vec<u8>
-}
-
-impl Ppu {
-    fn new() -> Ppu {
-        Ppu {
-            scan_line: 0,
-            cycle_count: 0,
-            vblank: false,
-            gen_nmi_at_vblank: false,
-
-            mem_read_mut_enabled: true,
-            ppu_addr: 0,
-            memory: vec![0; 0x10000],
-        }
-    }
-
-    fn step_cycle(&mut self, count: u16) -> bool {
-        self.cycle_count += count * 3;
-        if self.cycle_count >= 341 {
-            self.cycle_count -= 341;
-            self.scan_line += 1;
-            if self.scan_line == 241 {
-                self.vblank = true;
-            }
-            if self.scan_line >= 261 {
-                self.scan_line = -1;
-                self.vblank = false;
-            }
-        }
-        let nmi_line = !(self.vblank && self.gen_nmi_at_vblank);
-        nmi_line
-    }
-
-    fn read_mem(&mut self, cpu_address: u16) -> u8 {
-        match cpu_address {
-            0x2000 | 0x2001 | 0x2005 | 0x2006 => { // Write-only registers, return 0
-                0
-            }
-            0x2002 => {
-                let value = if self.vblank {0x80} else {0x00};
-                if self.mem_read_mut_enabled {
-                    self.vblank = false;
-                    self.ppu_addr = 0;
-                }
-                value
-            }
-            0x2007 => {
-                let addr = self.ppu_addr;
-                self.read_mem_ppu(addr)
-            }
-            _ => panic!("Unimplemented read address: {:04X}", cpu_address)
-        }
-    }
-
-    fn write_mem(&mut self, cpu_address: u16, value: u8) {
-        match cpu_address {
-            0x2000 => {
-                if value != 0 && value != 0x80 && value != 0x84 {
-                    panic!("Unimplemented! {:02X}", value);
-                }
-                self.gen_nmi_at_vblank = (value & 0x80) != 0;
-            }
-            0x2001 | 0x2005 => {
-            }
-            0x2006 => {
-                self.ppu_addr = (self.ppu_addr << 8) + value as u16;
-            }
-            0x2007 => {
-                let addr = self.ppu_addr;
-                self.write_mem_ppu(addr, value);
-            }
-            _ => panic!("Unimplemented write address: {:04X}", cpu_address)
-        }
-    }
-
-    fn read_mem_ppu(&self, ppu_address: u16) -> u8 {
-        self.memory[ppu_address as usize]
-    }
-
-    fn write_mem_ppu(&mut self, ppu_address: u16, value: u8) {
-        self.memory[ppu_address as usize] = value;
-    }
-}
-
-pub struct Machine {
+pub struct Cpu {
     reg: Registers,
-    memory: Vec<u8>,
-    ppu: RefCell<Ppu>,
-    nmi_line: bool,
-    nmi_triggered: bool,
     instructions: HashMap<u8, Instruction>,
+    nmi_triggered: bool,
 }
 
 #[derive(Debug)]
@@ -166,70 +69,57 @@ fn set_flag(status: &mut u8, flag: StatusFlag, enabled: bool) {
     }
 }
 
-impl Machine {
-    pub fn new() -> Machine {
-        let mut memory = vec![0; 0x10000];
-        // Set I/O registers to FF
-        for i in 0x4000..0x4020 {
-            memory[i] = 0xFF;
-        }
-        Machine {
+impl Cpu {
+    pub fn new() -> Self {
+        Cpu {
             reg: Registers { pc:0, sp:0xfd, a:0, x:0, y:0, status:0x24 },
-            memory: memory,
-            nmi_line: true,
+            instructions: Cpu::add_instructions(),
             nmi_triggered: false,
-            ppu: RefCell::new(Ppu::new()),
-            instructions: Machine::add_instructions(),
         }
     }
 
-    pub fn load_rom(&mut self, rom: NesRom) {
-        if rom.prg_rom.len() == 16384 {
-            self.memory[0x8000..0xc000].clone_from_slice(&rom.prg_rom);
-            self.memory[0xc000..0x10000].clone_from_slice(&rom.prg_rom);
-        }
-        self.reset();
-    }
-
-    pub fn reset(&mut self) {
-        self.perform_interrupt(0xffc, 0xffd, false);
-        self.reg.pc = ((self.read_mem(0xfffd) as u16) << 8) +
-            self.read_mem(0xfffc) as u16;
+    pub fn reset(&mut self, m: &mut Machine) {
+        self.perform_interrupt(m, 0xffc, 0xffd, false);
+        self.reg.pc = ((m.read_mem(0xfffd) as u16) << 8) +
+            m.read_mem(0xfffc) as u16;
     }
 
     pub fn set_program_counter(&mut self, address: u16) {
         self.reg.pc = address;
     }
 
-    pub fn set_scan_line(&mut self, scan_line: i16) {
-        self.ppu.borrow_mut().scan_line = scan_line;
+    fn perform_interrupt(&mut self, m: &mut Machine,
+                         pcl_addr: u16, pch_addr: u16, write_to_stack: bool) {
+        println!("performing interrupt!");
+        if write_to_stack {
+            let pch = (self.reg.pc >> 8) as u8;
+            let pcl = (self.reg.pc & 0xff) as u8;
+            self.push(m, pch);
+            self.push(m, pcl);
+            let status = self.reg.status;
+            self.push(m, status);
+        }
+        let pch = m.read_mem(pch_addr) as u16;
+        let pcl = m.read_mem(pcl_addr) as u16;
+        let new_pc = (pch << 8) + pcl;
+        self.reg.pc = new_pc;
     }
 
     fn get_status_flag(&mut self, flag: StatusFlag) -> bool {
         self.reg.status & (1 << flag as u8) != 0
     }
 
-    pub fn get_state_string(&self) -> String {
-        let reg_str = format!("A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X}",
-                              self.reg.a, self.reg.x, self.reg.y,
-                              self.reg.status, self.reg.sp);
-        let instr_str = self.decode_instruction();
-        format!("{:04X}  {}{} CYC:{:3} SL:{}",
-                self.reg.pc, instr_str, reg_str,
-                self.ppu.borrow().cycle_count, self.ppu.borrow().scan_line)
+    fn get_op(&self, m: &mut Machine, op_index: u8) -> u8 {
+        m.read_mem(self.reg.pc + op_index as u16)
     }
 
-    fn get_op(&self, op_index: u8) -> u8 {
-        self.read_mem(self.reg.pc + op_index as u16)
+    fn get_op_u16(&self, m: &mut Machine) -> u16 {
+        ((self.get_op(m, 2) as u16) << 8) + self.get_op(m, 1) as u16
     }
 
-    fn get_op_u16(&self) -> u16 {
-        ((self.get_op(2) as u16) << 8) + self.get_op(1) as u16
-    }
-
-    fn decode_instruction(&self) -> String {
-        self.ppu.borrow_mut().mem_read_mut_enabled = false;
-        let op_code = self.read_mem(self.reg.pc);
+    fn decode_instruction(&self, m: &mut Machine) -> String {
+        m.ppu.borrow_mut().mem_read_mut_enabled = false;
+        let op_code = m.read_mem(self.reg.pc);
         let instr = match self.instructions.get(&op_code) {
             Some(instr) => instr,
             None => { return format!("{:02X}        {:32}", op_code, "<unknown>")},
@@ -237,13 +127,13 @@ impl Machine {
         let mut code_str = format!("{:02X}", instr.op_code);
         if instr.addressing_mode != AddressingMode::Implied &&
             instr.addressing_mode != AddressingMode::Accumulator {
-            code_str += &format!(" {:02X}", self.get_op(1));
+            code_str += &format!(" {:02X}", self.get_op(m, 1));
         }
         if instr.addressing_mode == AddressingMode::Absolute ||
             instr.addressing_mode == AddressingMode::Indirect ||
             instr.addressing_mode == AddressingMode::AbsoluteX ||
             instr.addressing_mode == AddressingMode::AbsoluteY {
-            code_str += &format!(" {:02X}", self.get_op(2));
+            code_str += &format!(" {:02X}", self.get_op(m, 2));
         }
 
         let mut disass_str = String::new();
@@ -256,135 +146,106 @@ impl Machine {
                 disass_str += " A";
             }
             AddressingMode::Immediate => {
-                disass_str += &format!(" #${:02X}", self.get_op(1));
+                disass_str += &format!(" #${:02X}", self.get_op(m,  1));
             },
             AddressingMode::Relative => {
-                disass_str += &format!(" ${:04X}", (self.reg.pc as i16 + 2 +
-                                                   (self.get_op(1) as i8) as i16) as u16);
+                disass_str += &format!(" ${:04X}",
+                                       (self.reg.pc as i16 + 2 +
+                                        (self.get_op(m, 1) as i8) as i16) as u16);
             }
             AddressingMode::Absolute => {
-                let address = self.get_op_u16();
+                let address = self.get_op_u16(m);
                 disass_str += &format!(" ${:04X}", address);
                 if instr.mnemonic != "JMP" && instr.mnemonic != "JSR" {
-                    disass_str += &format!(" = {:02X}", self.read_mem(address));
+                    disass_str += &format!(" = {:02X}", m.read_mem(address));
                 }
             },
             AddressingMode::ZeroPage => {
-                let mem_value = self.read_mem(self.get_op(1) as u16);
-                disass_str += &format!(" ${:02X} = {:02X}", self.get_op(1), mem_value);
+                let addr = self.get_op(m, 1) as u16;
+                let mem_value = m.read_mem(addr);
+                disass_str += &format!(" ${:02X} = {:02X}",
+                                       self.get_op(m, 1), mem_value);
             },
             AddressingMode::ZeroPageX => {
-                let mem_value = self.get_op(1).wrapping_add(self.reg.x) as u16;
-                let value = self.read_mem(mem_value);
+                let mem_value = self.get_op(m, 1).wrapping_add(self.reg.x) as u16;
+                let value = m.read_mem(mem_value);
                 disass_str += &format!(" ${:02X},X @ {:02X} = {:02X}",
-                                       self.get_op(1), mem_value, value);
+                                       self.get_op(m, 1), mem_value, value);
             }
             AddressingMode::ZeroPageY => {
-                let mem_value = self.get_op(1).wrapping_add(self.reg.y) as u16;
-                let value = self.read_mem(mem_value);
+                let mem_value = self.get_op(m, 1).wrapping_add(self.reg.y) as u16;
+                let value = m.read_mem(mem_value);
                 disass_str += &format!(" ${:02X},Y @ {:02X} = {:02X}",
-                                       self.get_op(1), mem_value, value);
+                                       self.get_op(m, 1), mem_value, value);
             }
             AddressingMode::Implied => {
             }
             AddressingMode::AbsoluteX => {
-                let address = self.get_op_u16();
+                let address = self.get_op_u16(m);
                 let indirect_address = address.wrapping_add(self.reg.x as u16);
-                let value = self.read_mem(indirect_address);
+                let value = m.read_mem(indirect_address);
                 disass_str += &format!(" ${:04X},X @ {:04X} = {:02X}",
                                        address, indirect_address, value);
             }
             AddressingMode::AbsoluteY => {
-                let address = self.get_op_u16();
+                let address = self.get_op_u16(m);
                 let indirect_address = address.wrapping_add(self.reg.y as u16);
-                let value = self.read_mem(indirect_address);
+                let value = m.read_mem(indirect_address);
                 disass_str += &format!(" ${:04X},Y @ {:04X} = {:02X}",
                                        address, indirect_address, value);
             }
             AddressingMode::Indirect => {
-                let address = self.get_op_u16();
-                let indirect_address_low = self.read_mem(address) as u16;
-                let indirect_address_high = self.read_mem(address + 1) as u16;
+                let address = self.get_op_u16(m);
+                let indirect_address_low = m.read_mem(address) as u16;
+                let indirect_address_high = m.read_mem(address + 1) as u16;
                 let indirect_address = (indirect_address_high << 8) + indirect_address_low;
                 disass_str += &format!(" (${:04X}) = {:04X}", address, indirect_address);
             }
             AddressingMode::IndirectX => {
-                let address = self.get_op(1) as u16;
+                let address = self.get_op(m, 1) as u16;
                 let x = self.reg.x as u16;
-                let indirect_address_low = self.read_mem((address + x) & 0xff) as u16;
-                let indirect_address_high = self.read_mem((address + x + 1) & 0xff) as u16;
+                let indirect_address_low = m.read_mem((address + x) & 0xff) as u16;
+                let indirect_address_high = m.read_mem((address + x + 1) & 0xff) as u16;
                 let indirect_address = (indirect_address_high << 8) + indirect_address_low;
-                let value = self.read_mem(indirect_address);
+                let value = m.read_mem(indirect_address);
                 disass_str += &format!(" (${:02X},X) @ {:02X} = {:04X} = {:02X}",
                                        address, (address + x) & 0xff, indirect_address, value);
             }
             AddressingMode::IndirectY => {
-                let address = self.get_op(1) as u16;
-                let indirect_address_low = self.read_mem(address) as u16;
-                let indirect_address_high = self.read_mem((address + 1) & 0xff) as u16;
+                let address = self.get_op(m, 1) as u16;
+                let indirect_address_low = m.read_mem(address) as u16;
+                let indirect_address_high = m.read_mem((address + 1) & 0xff) as u16;
                 let indirect_address = (indirect_address_high << 8) + indirect_address_low;
                 let final_address = indirect_address.wrapping_add(self.reg.y as u16);
-                let value = self.read_mem(final_address);
+                let value = m.read_mem(final_address);
                 disass_str += &format!(" (${:02X}),Y = {:04X} @ {:04X} = {:02X}",
                                        address, indirect_address, final_address, value);
             }
         }
-        self.ppu.borrow_mut().mem_read_mut_enabled = false;
+        m.ppu.borrow_mut().mem_read_mut_enabled = true;
         let result = format!("{:8} {:33}", code_str, disass_str);
         result
     }
 
-    fn read_mem(&self, address: u16) -> u8 {
-        if address >= 0x2000 && address < 0x2008 {
-            self.ppu.borrow_mut().read_mem(address)
-        }
-        else {
-            self.memory[address as usize]
-        }
-    }
-
-    fn write_mem(&mut self, address: u16, value: u8) {
-        if address >= 0x2000 && address < 0x2008 {
-            self.ppu.borrow_mut().write_mem(address, value);
-        }
-        else {
-            self.memory[address as usize] = value;
-        }
-    }
-
-    fn step_cycle(&mut self, count: u16) {
-        let old_nmi_line = self.nmi_line;
-        self.nmi_line = self.ppu.borrow_mut().step_cycle(count);
-        if old_nmi_line && !self.nmi_line {
-            self.nmi_triggered = true;
-        }
-    }
-
-    fn step_pc_and_cycle(&mut self, counts: (u16, u16)) {
-        let (pc_count, cycle_count) = counts;
-        self.reg.pc += pc_count;
-        self.step_cycle(cycle_count);
-    }
-
-    fn push(&mut self, value: u8) {
+    fn push(&mut self, m: &mut Machine, value: u8) {
         let address = 0x100 + self.reg.sp as u16;
-        self.write_mem(address, value);
+        m.write_mem(address, value);
         self.reg.sp -= 1;
     }
 
-    fn pop(&mut self) -> u8 {
+    fn pop(&mut self, m: &mut Machine) -> u8 {
         self.reg.sp += 1;
-        self.read_mem(0x100 + self.reg.sp as u16)
+        m.read_mem(0x100 + self.reg.sp as u16)
     }
 
-    fn branch_immediate(&mut self) {
-        let offset = self.get_op(1) as i8;
+    fn branch_immediate(&mut self, m: &mut Machine) {
+        let offset = self.get_op(m, 1) as i8;
         self.reg.pc += 2;
         let old_pc = self.reg.pc;
         self.reg.pc = (self.reg.pc as i16 + offset as i16) as u16;
-        self.step_cycle(1);
+        self.step_cycle(m, 1);
         if (old_pc & 0xFF00) != (self.reg.pc & 0xFF00) {
-            self.step_cycle(1);
+            self.step_cycle(m, 1);
         }
     }
 
@@ -632,53 +493,53 @@ impl Machine {
         instructions
     }
 
-    fn get_address(&self, addr_mode: AddressingMode) -> (u16, u16) {
+    fn get_address(&self, m: &mut Machine, addr_mode: AddressingMode) -> (u16, u16) {
         match addr_mode {
             AddressingMode::ZeroPage => {
-                (self.get_op(1) as u16, 0)
+                (self.get_op(m, 1) as u16, 0)
             }
             AddressingMode::ZeroPageX => {
-                (self.get_op(1).wrapping_add(self.reg.x) as u16, 0)
+                (self.get_op(m, 1).wrapping_add(self.reg.x) as u16, 0)
             }
             AddressingMode::ZeroPageY => {
-                (self.get_op(1).wrapping_add(self.reg.y) as u16, 0)
+                (self.get_op(m, 1).wrapping_add(self.reg.y) as u16, 0)
             }
             AddressingMode::Absolute => {
-                (self.get_op_u16(), 0)
+                (self.get_op_u16(m), 0)
             }
             AddressingMode::AbsoluteX => {
-                let address = self.get_op_u16();
+                let address = self.get_op_u16(m);
                 let oops = (address & 0xFF) + self.reg.x as u16 > 255;
                 (address.wrapping_add(self.reg.x as u16), if oops {1} else {0})
             }
             AddressingMode::AbsoluteY => {
-                let address = self.get_op_u16();
+                let address = self.get_op_u16(m);
                 let oops = (address & 0xFF) + self.reg.y as u16 > 255;
                 (address.wrapping_add(self.reg.y as u16), if oops {1} else {0})
             }
             AddressingMode::Indirect => {
-                let address = self.get_op_u16();
-                let indirect_address_low = self.read_mem(address) as u16;
+                let address = self.get_op_u16(m);
+                let indirect_address_low = m.read_mem(address) as u16;
                 let indirect_address_high = if (address & 0xFF) == 0xFF {
-                    self.read_mem(address + 1 - 0x100) as u16
+                    m.read_mem(address + 1 - 0x100) as u16
                 }
                 else {
-                    self.read_mem(address + 1) as u16
+                    m.read_mem(address + 1) as u16
                 };
                 let indirect_address = (indirect_address_high << 8) + indirect_address_low;
                 (indirect_address, 0)
             }
             AddressingMode::IndirectX => {
-                let address = self.get_op(1) as u16 + self.reg.x as u16;
-                let indirect_address_low = self.read_mem(address & 0xff) as u16;
-                let indirect_address_high = self.read_mem((address + 1) & 0xff) as u16;
+                let address = self.get_op(m, 1) as u16 + self.reg.x as u16;
+                let indirect_address_low = m.read_mem(address & 0xff) as u16;
+                let indirect_address_high = m.read_mem((address + 1) & 0xff) as u16;
                 let indirect_address = (indirect_address_high << 8) + indirect_address_low;
                 (indirect_address, 0)
             }
             AddressingMode::IndirectY => {
-                let address = self.get_op(1) as u16;
-                let indirect_address_low = self.read_mem(address) as u16;
-                let indirect_address_high = self.read_mem((address + 1) & 0xff) as u16;
+                let address = self.get_op(m, 1) as u16;
+                let indirect_address_low = m.read_mem(address) as u16;
+                let indirect_address_high = m.read_mem((address + 1) & 0xff) as u16;
                 let indirect_address = (indirect_address_high << 8) + indirect_address_low;
                 let final_address = indirect_address.wrapping_add(self.reg.y as u16);
                 let oops = (self.reg.y as u16).wrapping_add(indirect_address & 0xFF) > 255;
@@ -688,7 +549,7 @@ impl Machine {
         }
     }
 
-    fn get_byte(&self, addr_mode: AddressingMode) -> (u8, u16) {
+    fn get_byte(&self, m: &mut Machine, addr_mode: AddressingMode) -> (u8, u16) {
         match addr_mode {
             AddressingMode::Implied => {
                 (0, 0)
@@ -697,7 +558,7 @@ impl Machine {
                 (self.reg.a, 0)
             }
             AddressingMode::Immediate => {
-                (self.get_op(1), 0)
+                (self.get_op(m, 1), 0)
             }
             AddressingMode::Absolute |
             AddressingMode::ZeroPage |
@@ -707,14 +568,14 @@ impl Machine {
             AddressingMode::AbsoluteY |
             AddressingMode::IndirectX |
             AddressingMode::IndirectY => {
-                let (address, oops) = self.get_address(addr_mode);
-                (self.read_mem(address), oops)
+                let (address, oops) = self.get_address(m, addr_mode);
+                (m.read_mem(address), oops)
             }
             _ => { panic!("Unsupported addressing mode"); }
         }
     }
 
-    fn set_byte(&mut self, addr_mode: AddressingMode, value: u8) {
+    fn set_byte(&mut self, m: &mut Machine, addr_mode: AddressingMode, value: u8) {
         match addr_mode {
             AddressingMode::Accumulator => {
                 self.reg.a = value;
@@ -727,11 +588,21 @@ impl Machine {
             AddressingMode::ZeroPageY |
             AddressingMode::IndirectX |
             AddressingMode::IndirectY => {
-                let (address, _) = self.get_address(addr_mode);
-                self.write_mem(address, value);
+                let (address, _) = self.get_address(m, addr_mode);
+                m.write_mem(address, value);
             }
             _ => { panic!("Unsupported addressing mode"); }
         }
+    }
+
+    fn step_pc_and_cycle(&mut self, m: &mut Machine, counts: (u16, u16)) {
+        let (pc_count, cycle_count) = counts;
+        self.reg.pc += pc_count;
+        self.step_cycle(m, cycle_count);
+    }
+
+    fn step_cycle(&mut self, m: &mut Machine, count: u16) {
+        self.nmi_triggered = m.step_cycle(count);
     }
 
     fn compute_sbc(&mut self, a: u8, m: u8) {
@@ -744,7 +615,7 @@ impl Machine {
         self.reg.a = (result & 0xFF) as u8;
         set_flag(&mut self.reg.status, StatusFlag::Overflow, overflow);
         set_flag(&mut self.reg.status, StatusFlag::Carry, result < 0x100);
-        Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
+        Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
     }
 
     fn compute_adc(&mut self, a: u8, m: u8) {
@@ -757,44 +628,28 @@ impl Machine {
              result & 0x80 != 0);
         set_flag(&mut self.reg.status, StatusFlag::Overflow, overflow);
         self.reg.a = (result & 0xFF) as u8;
-        Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
+        Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
     }
 
-    pub fn execute(&mut self) {
+    pub fn execute(&mut self, m: &mut Machine) {
         if self.nmi_triggered {
             self.nmi_triggered = false;
-            self.perform_interrupt(0xfffa, 0xfffb, true);
+            self.perform_interrupt(m, 0xfffa, 0xfffb, true);
         }
         else {
-            self.execute_instruction();
+            self.execute_instruction(m);
         }
     }
 
-    fn perform_interrupt(&mut self, pcl_addr: u16, pch_addr: u16, write_to_stack: bool) {
-        println!("performing interrupt!");
-        if write_to_stack {
-            let pch = (self.reg.pc >> 8) as u8;
-            let pcl = (self.reg.pc & 0xff) as u8;
-            self.push(pch);
-            self.push(pcl);
-            let status = self.reg.status;
-            self.push(status);
-        }
-        let pch = self.read_mem(pch_addr) as u16;
-        let pcl = self.read_mem(pcl_addr) as u16;
-        let new_pc = (pch << 8) + pcl;
-        self.reg.pc = new_pc;
-    }
-
-    fn execute_instruction(&mut self) {
-        let op_code = self.read_mem(self.reg.pc);
+    fn execute_instruction(&mut self, sys: &mut Machine) {
+        let op_code = sys.read_mem(self.reg.pc);
         let addr_mode = self.instructions.get(&op_code).unwrap().addressing_mode.clone();
         match op_code {
             0x01 | 0x05 | 0x09 | 0x0D | 0x11 | 0x15 | 0x19 | 0x1D => { // ORA
-                let (value, oops) = self.get_byte(addr_mode);
+                let (value, oops) = self.get_byte(sys, addr_mode);
                 self.reg.a = self.reg.a | value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
@@ -807,14 +662,14 @@ impl Machine {
                     });
             }
             0x03 | 0x07 | 0x0F | 0x13 | 0x17 | 0x1B | 0x1F => { // *SLO
-                let (mut value, oops) = self.get_byte(addr_mode);
+                let (mut value, oops) = self.get_byte(sys, addr_mode);
                 let carry = value & 0x80 != 0;
                 value <<= 1;
                 set_flag(&mut self.reg.status, StatusFlag::Carry, carry);
                 self.reg.a = self.reg.a | value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
-                self.set_byte(addr_mode, value);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
+                self.set_byte(sys, addr_mode, value);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
                     AddressingMode::Absolute => (3, 6),
@@ -826,13 +681,13 @@ impl Machine {
                     });
             }
             0x06 | 0x0A | 0x0E | 0x16 | 0x1E => { // ASL
-                let mut value = self.get_byte(addr_mode).0;
+                let mut value = self.get_byte(sys, addr_mode).0;
                 let carry = value & 0x80 != 0;
                 value <<= 1;
                 set_flag(&mut self.reg.status, StatusFlag::Carry, carry);
-                Machine::update_zero_negative(&mut self.reg.status, value);
-                self.set_byte(addr_mode, value);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, value);
+                self.set_byte(sys, addr_mode, value);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Accumulator => (1, 2),
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
@@ -843,40 +698,40 @@ impl Machine {
             }
             0x08 => { // PHP
                 let value = self.reg.status | 0x10; // Bit 4 should be set to one
-                self.push(value);
+                self.push(sys, value);
                 self.reg.pc += 1;
-                self.step_cycle(3);
+                self.step_cycle(sys, 3);
             }
             0x10 => { // BPL
                 if !self.get_status_flag(StatusFlag::Negative) {
-                    self.branch_immediate();
+                    self.branch_immediate(sys);
                 }
                 else {
                     self.reg.pc += 2;
                 }
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x18 => { // CLC
                 set_flag(&mut self.reg.status, StatusFlag::Carry, false);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x20 => { // JSR
                 let return_addr = self.reg.pc + 2;
-                self.push((return_addr >> 8) as u8);
-                self.push((return_addr & 0xFF) as u8);
+                self.push(sys, (return_addr >> 8) as u8);
+                self.push(sys, (return_addr & 0xFF) as u8);
                 let new_pc =
-                    self.get_op(2) as u16 * 256 + self.get_op(1) as u16;
+                    self.get_op(sys, 2) as u16 * 256 + self.get_op(sys, 1) as u16;
                 self.reg.pc = new_pc;
-                self.step_cycle(6);
+                self.step_cycle(sys, 6);
             }
             0x24 | 0x2C => { // BIT
-                let value = self.get_byte(addr_mode).0;
+                let value = self.get_byte(sys, addr_mode).0;
                 let mask = self.reg.a & value;
                 set_flag(&mut self.reg.status, StatusFlag::Zero, mask == 0);
                 set_flag(&mut self.reg.status, StatusFlag::Overflow, value & 0x40 != 0);
                 set_flag(&mut self.reg.status, StatusFlag::Negative, value & 0x80 != 0);
-                self.step_pc_and_cycle(match addr_mode {
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::Absolute => (3, 4),
                     _ => panic!("Unexpected addressing mode"),
@@ -884,17 +739,17 @@ impl Machine {
             }
             0x28 => { // PLP
                 // Bit 4 and 5 in status register should not be changed
-                let value = self.pop() & 0xCF; // Clear bit 4 and 5
+                let value = self.pop(sys) & 0xCF; // Clear bit 4 and 5
                 self.reg.status &= 0x30; // Clear all, except bit 4 and 5
                 self.reg.status |= value; // Copy all, except bit 4 and 5
                 self.reg.pc += 1;
-                self.step_cycle(4);
+                self.step_cycle(sys, 4);
             }
             0x21 | 0x25 | 0x29 | 0x2D | 0x31 | 0x35 | 0x39 | 0x3D => { // AND
-                let (value, oops) = self.get_byte(addr_mode);
+                let (value, oops) = self.get_byte(sys, addr_mode);
                 self.reg.a = self.reg.a & value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
@@ -907,17 +762,17 @@ impl Machine {
                     });
             }
             0x23 | 0x27 | 0x2F | 0x33 | 0x37 | 0x3B | 0x3F => { // *RLA
-                let (mut value, oops) = self.get_byte(addr_mode);
+                let (mut value, oops) = self.get_byte(sys, addr_mode);
                 let new_carry = value & 0x80 != 0;
                 value <<= 1;
                 if self.get_status_flag(StatusFlag::Carry) {
                     value |= 0x01;
                 }
                 set_flag(&mut self.reg.status, StatusFlag::Carry, new_carry);
-                self.set_byte(addr_mode, value);
+                self.set_byte(sys, addr_mode, value);
                 self.reg.a = self.reg.a & value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
                     AddressingMode::Absolute => (3, 6),
@@ -929,16 +784,16 @@ impl Machine {
                     });
             }
             0x26 | 0x2A | 0x2E | 0x36 | 0x3E => { // ROL
-                let mut value = self.get_byte(addr_mode).0;
+                let mut value = self.get_byte(sys, addr_mode).0;
                 let new_carry = value & 0x80 != 0;
                 value <<= 1;
                 if self.get_status_flag(StatusFlag::Carry) {
                     value |= 0x01;
                 }
                 set_flag(&mut self.reg.status, StatusFlag::Carry, new_carry);
-                Machine::update_zero_negative(&mut self.reg.status, value);
-                self.set_byte(addr_mode, value);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, value);
+                self.set_byte(sys, addr_mode, value);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Accumulator => (1, 2),
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
@@ -949,48 +804,48 @@ impl Machine {
             }
             0x30 => { // BMI
                 if self.get_status_flag(StatusFlag::Negative) {
-                    self.branch_immediate();
+                    self.branch_immediate(sys);
                 }
                 else {
                     self.reg.pc += 2;
                 }
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x38 => { // SEC
                 set_flag(&mut self.reg.status, StatusFlag::Carry, true);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x40 => { // RTI
                 // Ignore bit 4 and 5
-                let status = self.pop() & 0xCF;
+                let status = self.pop(sys) & 0xCF;
                 self.reg.status &= 0x30;
                 self.reg.status |= status;
-                let pcl = self.pop() as u16;
-                let pch = self.pop() as u16;
+                let pcl = self.pop(sys) as u16;
+                let pch = self.pop(sys) as u16;
                 self.reg.pc = (pch << 8) + pcl;
-                self.step_cycle(6);
+                self.step_cycle(sys, 6);
             }
             0x48 => { // PHA
                 let value = self.reg.a;
-                self.push(value);
+                self.push(sys, value);
                 self.reg.pc += 1;
-                self.step_cycle(3);
+                self.step_cycle(sys, 3);
             }
             0x4C | 0x6C => { // JMP
-                let new_pc = self.get_address(addr_mode).0;
+                let new_pc = self.get_address(sys, addr_mode).0;
                 self.reg.pc = new_pc;
-                self.step_pc_and_cycle(match addr_mode {
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Absolute => (0, 3),
                     AddressingMode::Indirect => (0, 5),
                     _ => panic!("Unexpected addressing mode"),
                     })
             }
             0x41 | 0x45 | 0x49 | 0x4D | 0x51 | 0x55 | 0x59 | 0x5D => { // EOR
-                let (value, oops) = self.get_byte(addr_mode);
+                let (value, oops) = self.get_byte(sys, addr_mode);
                 self.reg.a = self.reg.a ^ value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
@@ -1003,14 +858,14 @@ impl Machine {
                     });
             }
             0x43 | 0x47 | 0x4F | 0x53 | 0x57 | 0x5B | 0x5F => { // *SRE
-                let (mut value, oops) = self.get_byte(addr_mode);
+                let (mut value, oops) = self.get_byte(sys, addr_mode);
                 let carry = value & 0x01 != 0;
                 value >>= 1;
                 set_flag(&mut self.reg.status, StatusFlag::Carry, carry);
-                self.set_byte(addr_mode, value);
+                self.set_byte(sys, addr_mode, value);
                 self.reg.a = self.reg.a ^ value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
                     AddressingMode::Absolute => (3, 6),
@@ -1022,13 +877,13 @@ impl Machine {
                     });
             }
             0x46 | 0x4A | 0x4E | 0x56 | 0x5E => { // LSR
-                let mut value = self.get_byte(addr_mode).0;
+                let mut value = self.get_byte(sys, addr_mode).0;
                 let carry = value & 0x01 != 0;
                 value >>= 1;
                 set_flag(&mut self.reg.status, StatusFlag::Carry, carry);
-                Machine::update_zero_negative(&mut self.reg.status, value);
-                self.set_byte(addr_mode, value);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, value);
+                self.set_byte(sys, addr_mode, value);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Accumulator => (1, 2),
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
@@ -1039,31 +894,31 @@ impl Machine {
             }
             0x50 => { // BVC
                 if !self.get_status_flag(StatusFlag::Overflow) {
-                    self.branch_immediate();
+                    self.branch_immediate(sys);
                 }
                 else {
                     self.reg.pc += 2;
                 }
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x60 => { // RTS
-                let low = self.pop() as u16;
-                let high = self.pop() as u16;
+                let low = self.pop(sys) as u16;
+                let high = self.pop(sys) as u16;
                 let return_addr = (high << 8) + low;
                 self.reg.pc = return_addr + 1;
-                self.step_cycle(6);
+                self.step_cycle(sys, 6);
             }
             0x68 => { // PLA
-                self.reg.a = self.pop();
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
+                self.reg.a = self.pop(sys);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
                 self.reg.pc += 1;
-                self.step_cycle(4);
+                self.step_cycle(sys, 4);
             }
             0x61 | 0x65 | 0x69 | 0x6D | 0x71 | 0x75 | 0x79 | 0x7D => { // ADC
                 let a = self.reg.a;
-                let (m, oops) = self.get_byte(addr_mode);
+                let (m, oops) = self.get_byte(sys, addr_mode);
                 self.compute_adc(a, m);
-                self.step_pc_and_cycle(match addr_mode {
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
@@ -1076,17 +931,17 @@ impl Machine {
                     });
             }
             0x63 | 0x67 | 0x6F | 0x73 | 0x77 | 0x7B | 0x7F => { // *RRA
-                let (mut value, oops) = self.get_byte(addr_mode);
+                let (mut value, oops) = self.get_byte(sys, addr_mode);
                 let new_carry = value & 0x01 != 0;
                 value >>= 1;
                 if self.get_status_flag(StatusFlag::Carry) {
                     value |= 0x80;
                 }
                 set_flag(&mut self.reg.status, StatusFlag::Carry, new_carry);
-                self.set_byte(addr_mode, value);
+                self.set_byte(sys, addr_mode, value);
                 let a = self.reg.a;
                 self.compute_adc(a, value);
-                self.step_pc_and_cycle(match addr_mode {
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
                     AddressingMode::Absolute => (3, 6),
@@ -1098,16 +953,16 @@ impl Machine {
                     });
             }
             0x66 | 0x6A | 0x6E | 0x76 | 0x7E => { // ROR
-                let mut value = self.get_byte(addr_mode).0;
+                let mut value = self.get_byte(sys, addr_mode).0;
                 let new_carry = value & 0x01 != 0;
                 value >>= 1;
                 if self.get_status_flag(StatusFlag::Carry) {
                     value |= 0x80;
                 }
                 set_flag(&mut self.reg.status, StatusFlag::Carry, new_carry);
-                Machine::update_zero_negative(&mut self.reg.status, value);
-                self.set_byte(addr_mode, value);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, value);
+                self.set_byte(sys, addr_mode, value);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Accumulator => (1, 2),
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
@@ -1118,23 +973,23 @@ impl Machine {
             }
             0x70 => { // BVS
                 if self.get_status_flag(StatusFlag::Overflow) {
-                    self.branch_immediate();
+                    self.branch_immediate(sys);
                 }
                 else {
                     self.reg.pc += 2;
                 }
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x78 => { // SEI
                 set_flag(&mut self.reg.status, StatusFlag::InterruptDisable, true);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x81 | 0x85 | 0x8D | 0x91 | 0x95 | 0x99 | 0x9D => { // STA
-                let (addr, _) = self.get_address(addr_mode);
+                let (addr, _) = self.get_address(sys, addr_mode);
                 let value = self.reg.a;
-                self.write_mem(addr, value);
-                self.step_pc_and_cycle(match addr_mode {
+                sys.write_mem(addr, value);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
                     AddressingMode::Absolute => (3, 4),
@@ -1146,10 +1001,10 @@ impl Machine {
                     })
             }
             0x83 | 0x87 | 0x8F | 0x97 => { // *SAX
-                let (addr, _) = self.get_address(addr_mode);
+                let (addr, _) = self.get_address(sys, addr_mode);
                 let  value = self.reg.a & self.reg.x;
-                self.write_mem(addr, value); 
-                self.step_pc_and_cycle(match addr_mode {
+                sys.write_mem(addr, value); 
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageY => (2, 4),
                     AddressingMode::Absolute => (3, 4),
@@ -1161,10 +1016,10 @@ impl Machine {
                     })
             }
             0x84 | 0x8C | 0x94 => { // STY
-                let (addr, _) = self.get_address(addr_mode);
+                let (addr, _) = self.get_address(sys, addr_mode);
                 let value = self.reg.y;
-                self.write_mem(addr, value);
-                self.step_pc_and_cycle(match addr_mode {
+                sys.write_mem(addr, value);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
                     AddressingMode::Absolute => (3, 4),
@@ -1172,10 +1027,10 @@ impl Machine {
                     })
             }
             0x86 | 0x8E | 0x96 => { // STX
-                let (addr, _) = self.get_address(addr_mode);
+                let (addr, _) = self.get_address(sys, addr_mode);
                 let value = self.reg.x;
-                self.write_mem(addr, value);
-                self.step_pc_and_cycle(match addr_mode {
+                sys.write_mem(addr, value);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageY => (2, 4),
                     AddressingMode::Absolute => (3, 4),
@@ -1184,41 +1039,41 @@ impl Machine {
             }
             0x88 => { // DEY
                 self.reg.y = self.reg.y.wrapping_sub(1);
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.y);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.y);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x8A => { // TXA
                 self.reg.a = self.reg.x;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x90 => { // BCC
                 if !self.get_status_flag(StatusFlag::Carry) {
-                    self.branch_immediate();
+                    self.branch_immediate(sys);
                 }
                 else {
                     self.reg.pc += 2;
                 }
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x98 => { // TYA
                 self.reg.a = self.reg.y;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0x9A => { // TXS
                 self.reg.sp = self.reg.x;
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xA0 | 0xA4 | 0xAC | 0xB4 | 0xBC => { // LDY
-                let (value, oops) = self.get_byte(addr_mode);
+                let (value, oops) = self.get_byte(sys, addr_mode);
                 self.reg.y = value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.y);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.y);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
@@ -1228,10 +1083,10 @@ impl Machine {
                     });
             }
             0xA2 | 0xA6 | 0xAE | 0xB6 | 0xBE => { // LDX
-                let (value, oops) = self.get_byte(addr_mode);
+                let (value, oops) = self.get_byte(sys, addr_mode);
                 self.reg.x = value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.x);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.x);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageY => (2, 4),
@@ -1241,11 +1096,11 @@ impl Machine {
                     });
             }
             0xA3 | 0xA7 | 0xAF | 0xB3 | 0xB7 | 0xBF => { // *LAX
-                let (value, oops) = self.get_byte(addr_mode);
+                let (value, oops) = self.get_byte(sys, addr_mode);
                 self.reg.a = value;
                 self.reg.x = value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.x);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.x);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageY => (2, 4),
                     AddressingMode::IndirectX => (2, 6),
@@ -1257,15 +1112,15 @@ impl Machine {
             }
             0xA8 => { // TAY
                 self.reg.y = self.reg.a;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.y);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.y);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xA1 | 0xA5 | 0xA9 | 0xAD | 0xB1 | 0xB5 | 0xB9 | 0xBD => { // LDA
-                let (value, oops) = self.get_byte(addr_mode);
+                let (value, oops) = self.get_byte(sys, addr_mode);
                 self.reg.a = value;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.a);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
@@ -1279,36 +1134,36 @@ impl Machine {
             }
             0xAA => { // TAX
                 self.reg.x = self.reg.a;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.x);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.x);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xB0 => { // BCS
                 if self.get_status_flag(StatusFlag::Carry) {
-                    self.branch_immediate();
+                    self.branch_immediate(sys);
                 }
                 else {
                     self.reg.pc += 2;
                 }
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xB8 => { // CLV
                 set_flag(&mut self.reg.status, StatusFlag::Overflow, false);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xBA => { // TSX
                 self.reg.x = self.reg.sp;
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.x);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.x);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xC0 | 0xC4 | 0xCC => { // CPY
-                let m = self.get_byte(addr_mode).0;
+                let m = self.get_byte(sys, addr_mode).0;
                 let result = self.reg.y.wrapping_sub(m);
                 set_flag(&mut self.reg.status, StatusFlag::Carry, self.reg.y >= m);
-                Machine::update_zero_negative(&mut self.reg.status, result);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, result);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::Absolute => (3, 4),
@@ -1317,16 +1172,16 @@ impl Machine {
             }
             0xC8 => { // INY
                 self.reg.y = self.reg.y.wrapping_add(1);
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.y);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.y);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xC1 | 0xC5 | 0xC9 | 0xCD | 0xD1 | 0xD5 | 0xD9 | 0xDD => { // CMP
-                let (m, oops) = self.get_byte(addr_mode);
+                let (m, oops) = self.get_byte(sys, addr_mode);
                 let result = self.reg.a.wrapping_sub(m);
                 set_flag(&mut self.reg.status, StatusFlag::Carry, self.reg.a >= m);
-                Machine::update_zero_negative(&mut self.reg.status, result);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, result);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
@@ -1339,13 +1194,13 @@ impl Machine {
                     });
             }
             0xC3 | 0xC7 | 0xCF | 0xD3 | 0xD7 | 0xDB | 0xDF => { // *DCP
-                let (mut m, oops) = self.get_byte(addr_mode);
+                let (mut m, oops) = self.get_byte(sys, addr_mode);
                 m = m.wrapping_sub(1);
-                self.set_byte(addr_mode, m);
+                self.set_byte(sys, addr_mode, m);
                 let result = self.reg.a.wrapping_sub(m);
                 set_flag(&mut self.reg.status, StatusFlag::Carry, self.reg.a >= m);
-                Machine::update_zero_negative(&mut self.reg.status, result);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, result);
+                self.step_pc_and_cycle(sys, match addr_mode {
 //                    AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
@@ -1358,11 +1213,11 @@ impl Machine {
                     });
             }
             0xC6 | 0xCE | 0xD6 | 0xDE => { // DEC
-                let mut m = self.get_byte(addr_mode).0;
+                let mut m = self.get_byte(sys, addr_mode).0;
                 m = m.wrapping_sub(1);
-                self.set_byte(addr_mode, m);
-                Machine::update_zero_negative(&mut self.reg.status, m);
-                self.step_pc_and_cycle(match addr_mode {
+                self.set_byte(sys, addr_mode, m);
+                Cpu::update_zero_negative(&mut self.reg.status, m);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
                     AddressingMode::Absolute => (3, 6),
@@ -1372,30 +1227,30 @@ impl Machine {
             }
             0xCA => { // DEX
                 self.reg.x = self.reg.x.wrapping_sub(1);
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.x);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.x);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xD0 => { // BNE
                 if !self.get_status_flag(StatusFlag::Zero) {
-                    self.branch_immediate();
+                    self.branch_immediate(sys);
                 }
                 else {
                     self.reg.pc += 2;
                 }
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xD8 => { // CLD
                 set_flag(&mut self.reg.status, StatusFlag::DecimalMode, false);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xE0 | 0xE4 | 0xEC => { // CPX
-                let m = self.get_byte(addr_mode).0;
+                let m = self.get_byte(sys, addr_mode).0;
                 let result = self.reg.x.wrapping_sub(m);
                 set_flag(&mut self.reg.status, StatusFlag::Carry, self.reg.x >= m);
-                Machine::update_zero_negative(&mut self.reg.status, result);
-                self.step_pc_and_cycle(match addr_mode {
+                Cpu::update_zero_negative(&mut self.reg.status, result);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::Absolute => (3, 4),
@@ -1404,11 +1259,11 @@ impl Machine {
             }
             0xE3 | 0xE7 | 0xEF | 0xF3 | 0xF7 | 0xFB | 0xFF => { // *ISB
                 let a = self.reg.a;
-                let (mut m, oops) = self.get_byte(addr_mode);
+                let (mut m, oops) = self.get_byte(sys, addr_mode);
                 m = m.wrapping_add(1);
-                self.set_byte(addr_mode, m);
+                self.set_byte(sys, addr_mode, m);
                 self.compute_sbc(a, m);
-                self.step_pc_and_cycle(match addr_mode {
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
                     AddressingMode::IndirectX => (2, 8),
@@ -1420,11 +1275,11 @@ impl Machine {
                     });
             }
             0xE6 | 0xEE | 0xF6 | 0xFE => { // INC
-                let mut m = self.get_byte(addr_mode).0;
+                let mut m = self.get_byte(sys, addr_mode).0;
                 m = m.wrapping_add(1);
-                self.set_byte(addr_mode, m);
-                Machine::update_zero_negative(&mut self.reg.status, m);
-                self.step_pc_and_cycle(match addr_mode {
+                self.set_byte(sys, addr_mode, m);
+                Cpu::update_zero_negative(&mut self.reg.status, m);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::ZeroPage => (2, 5),
                     AddressingMode::ZeroPageX => (2, 6),
                     AddressingMode::Absolute => (3, 6),
@@ -1434,16 +1289,16 @@ impl Machine {
             }
             0xE8 => { // INX
                 self.reg.x = self.reg.x.wrapping_add(1);
-                Machine::update_zero_negative(&mut self.reg.status, self.reg.x);
+                Cpu::update_zero_negative(&mut self.reg.status, self.reg.x);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             
             0xE1 | 0xE5 | 0xE9 | 0xED | 0xF1 | 0xF5 | 0xF9 | 0xFD | 0xEB => { // SBC
                 let a = self.reg.a;
-                let (m, oops) = self.get_byte(addr_mode);
+                let (m, oops) = self.get_byte(sys, addr_mode);
                 self.compute_sbc(a, m);
-                self.step_pc_and_cycle(match addr_mode {
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageX => (2, 4),
@@ -1458,8 +1313,8 @@ impl Machine {
             0x04 | 0x0C | 0x14 | 0x1A | 0x1C | 0x34 | 0x3A | 0x3C | 0x44 |
             0x54 | 0x5A | 0x5C | 0x64 | 0x74 | 0x7A | 0x7C | 0x80 | 0xD4 | 0xDA |
             0xDC | 0xEA | 0xF4 | 0xFA | 0xFC => { // NOP
-                let (_, oops) = self.get_byte(addr_mode);
-                self.step_pc_and_cycle(match addr_mode {
+                let (_, oops) = self.get_byte(sys, addr_mode);
+                self.step_pc_and_cycle(sys, match addr_mode {
                     AddressingMode::Implied => (1, 2),
                     AddressingMode::Immediate => (2, 2),
                     AddressingMode::AbsoluteX |
@@ -1472,56 +1327,29 @@ impl Machine {
             }
             0xF0 => { // BEQ
                 if self.get_status_flag(StatusFlag::Zero) {
-                    self.branch_immediate();
+                    self.branch_immediate(sys);
                 }
                 else {
                     self.reg.pc += 2;
                 }
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             0xF8 => { // SED
                 set_flag(&mut self.reg.status, StatusFlag::DecimalMode, true);
                 self.reg.pc += 1;
-                self.step_cycle(2);
+                self.step_cycle(sys, 2);
             }
             _ => { panic!("unexpected opcode {:02X}", op_code); }
         }
     }
-}
 
-#[derive(Debug)]
-pub struct NesRom {
-    header: [u8; 16],
-    prg_rom: Vec<u8>,
-    chr_rom: Vec<u8>,
-}
-
-pub fn read_nes_file(path: &str) -> NesRom {
-    let mut data = Vec::new();
-    let mut f = File::open(path).expect("Unable to open file");
-    f.read_to_end(&mut data).expect("Unable to read data");
-
-    let mut header = [0; 16];
-    header.clone_from_slice(&data[0..16]);
-    let magic = "NES\x1a".as_bytes();
-    if &data[0..4] != magic {
-        panic!("Not a NES file");
+    pub fn get_state_string(&self, sys: &mut Machine) -> String {
+        let reg_str = format!("A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X}",
+                              self.reg.a, self.reg.x, self.reg.y,
+                              self.reg.status, self.reg.sp);
+        let instr_str = self.decode_instruction(sys);
+        
+        format!("{:04X}  {}{}", self.reg.pc, instr_str, reg_str)
     }
-    let prg_rom_size_16kb_units = data[4];
-    let chr_rom_size_8kb_units = data[5];
-    let _flags6 = data[6];
-    let _has_trainer = data[6] & (1 << 2) == (1 << 2);
-    let _has_play_choice_rom = data[7] & (1 << 2) == (1 << 2);
-    let _prg_ram_size_8kb_units = data[8];
 
-    let prg_size = prg_rom_size_16kb_units as usize * 16384;
-    let chr_size = chr_rom_size_8kb_units as usize * 8192;
-    let mut prg_rom = vec![0; prg_size];
-    prg_rom.clone_from_slice(&data[16 .. 16 + prg_size]);
-    let mut chr_rom = vec![0; chr_size];
-    chr_rom.clone_from_slice(&data[16 + prg_size .. 16 + prg_size + chr_size]);
-
-    NesRom { header: header,
-             prg_rom: prg_rom,
-             chr_rom: chr_rom }
 }
