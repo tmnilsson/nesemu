@@ -1,9 +1,20 @@
+extern crate sdl2;
+extern crate time;
+
+use time::{Duration, PreciseTime};
+
 mod nes;
 
+#[cfg(test)]
 use std::fs::File;
+
+#[cfg(test)]
 use std::io::BufRead;
+
+#[cfg(test)]
 use std::io::BufReader;
 
+#[cfg(test)]
 fn test_nestest_rom(verbose: bool) {
     let mut machine = nes::Machine::new();
     let mut cpu = nes::cpu::Cpu::new();
@@ -50,12 +61,27 @@ fn main()
 {
     let mut machine = nes::Machine::new();
     let mut cpu = nes::cpu::Cpu::new();
-    let rom = nes::read_nes_file("nestest.nes");
+    let rom = nes::read_nes_file("/home/tomas/Downloads/background/background.nes");
+    //let rom = nes::read_nes_file("nestest.nes");
+    //let rom = nes::read_nes_file("/home/tomas/Downloads/sprites/sprites.nes");
     machine.load_rom(rom);
     cpu.reset(&mut machine);
 
-    loop {
-        println!("{}", nes::get_state_string(&cpu, &mut machine));
-        cpu.execute(&mut machine);
+    let mut prev_time = PreciseTime::now();
+    'running: loop {
+        let quit = machine.handle_events();
+        if quit {
+            break 'running;
+        }
+        machine.clear();
+        cpu.execute_until_nmi(&mut machine);
+        machine.present();
+        let now = PreciseTime::now();
+        let duration = prev_time.to(now);
+        if duration.num_milliseconds() < 16 {
+            std::thread::sleep((Duration::milliseconds(16) - duration).to_std().unwrap());
+        }
+        //println!("duration: {}", prev_time.to(PreciseTime::now()).num_milliseconds());
+        prev_time = PreciseTime::now();
     }
 }

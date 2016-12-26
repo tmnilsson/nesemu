@@ -84,13 +84,13 @@ impl Cpu {
             m.read_mem(0xfffc) as u16;
     }
 
+    #[cfg(test)]
     pub fn set_program_counter(&mut self, address: u16) {
         self.reg.pc = address;
     }
 
     fn perform_interrupt(&mut self, m: &mut Machine,
                          pcl_addr: u16, pch_addr: u16, write_to_stack: bool) {
-        println!("performing interrupt!");
         if write_to_stack {
             let pch = (self.reg.pc >> 8) as u8;
             let pcl = (self.reg.pc & 0xff) as u8;
@@ -118,7 +118,7 @@ impl Cpu {
     }
 
     fn decode_instruction(&self, m: &mut Machine) -> String {
-        m.ppu.borrow_mut().mem_read_mut_enabled = false;
+        m.ppu.mem_read_mut_enabled = false;
         let op_code = m.read_mem(self.reg.pc);
         let instr = match self.instructions.get(&op_code) {
             Some(instr) => instr,
@@ -222,7 +222,7 @@ impl Cpu {
                                        address, indirect_address, final_address, value);
             }
         }
-        m.ppu.borrow_mut().mem_read_mut_enabled = true;
+        m.ppu.mem_read_mut_enabled = true;
         let result = format!("{:8} {:33}", code_str, disass_str);
         result
     }
@@ -631,13 +631,20 @@ impl Cpu {
         Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
     }
 
-    pub fn execute(&mut self, m: &mut Machine) {
+    pub fn execute_until_nmi(&mut self, m: &mut Machine) {
+        while !self.execute(m) {
+        }
+    }
+
+    pub fn execute(&mut self, m: &mut Machine) -> bool {
         if self.nmi_triggered {
             self.nmi_triggered = false;
             self.perform_interrupt(m, 0xfffa, 0xfffb, true);
+            true
         }
         else {
             self.execute_instruction(m);
+            false
         }
     }
 
@@ -1343,6 +1350,7 @@ impl Cpu {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_state_string(&self, sys: &mut Machine) -> String {
         let reg_str = format!("A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X}",
                               self.reg.a, self.reg.x, self.reg.y,

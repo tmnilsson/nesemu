@@ -1,35 +1,52 @@
+extern crate sdl2;
+
 mod ppu;
 pub mod cpu;
 
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+
 use std::fs::File;
 use std::io::Read;
-use std::cell::RefCell;
 
 
-pub struct Machine {
-    pub ppu: RefCell<ppu::Ppu>,
+pub struct Machine<'a> {
+    pub ppu: ppu::Ppu<'a>,
     memory: Vec<u8>,
     nmi_line: bool,
+    sdl_context: sdl2::Sdl,
 }
 
 
+#[allow(dead_code)]
 pub fn get_state_string(cpu: &cpu::Cpu, machine: &mut Machine) -> String {
     format!("{} {}", cpu.get_state_string(machine), machine.get_state_string())
 }
 
 
-impl Machine {
+impl<'a> Machine<'a> {
     pub fn new() -> Self {
+        let mut sdl_context = sdl2::init().unwrap();
+
         let mut memory = vec![0; 0x10000];
         // Set I/O registers to FF
         for i in 0x4000..0x4020 {
             memory[i] = 0xFF;
         }
         Machine {
-            ppu: RefCell::new(ppu::Ppu::new()),
+            ppu: ppu::Ppu::new(&mut sdl_context),
             memory: memory,
             nmi_line: true,
+            sdl_context: sdl_context,
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.ppu.clear();
+    }
+
+    pub fn present(&mut self) {
+        self.ppu.present();
     }
 
     pub fn load_rom(&mut self, rom: NesRom) {
@@ -37,27 +54,46 @@ impl Machine {
             self.memory[0x8000..0xc000].clone_from_slice(&rom.prg_rom);
             self.memory[0xc000..0x10000].clone_from_slice(&rom.prg_rom);
         }
+        self.ppu.load_chr_rom(&rom.chr_rom);
     }
 
+    pub fn handle_events(&mut self) -> bool {
+        let mut event_pump = self.sdl_context.event_pump().unwrap();
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit {..} | Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
+                    return true;
+                },
+                Event::KeyDown { keycode: Some(Keycode::Space), .. } => {
+                    println!("Space");
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    #[cfg(test)]
     pub fn set_scan_line(&mut self, scan_line: i16) {
-        self.ppu.borrow_mut().set_scan_line(scan_line);
+        self.ppu.set_scan_line(scan_line);
     }
 
+    #[allow(dead_code)]
     pub fn get_state_string(&self) -> String {
         format!("CYC:{:3} SL:{}",
-                self.ppu.borrow().cycle_count, self.ppu.borrow().scan_line)
+                self.ppu.cycle_count, self.ppu.scan_line)
     }
     
     fn step_cycle(&mut self, count: u16) -> bool {
         let old_nmi_line = self.nmi_line;
-        self.nmi_line = self.ppu.borrow_mut().step_cycle(count);
+        self.nmi_line = self.ppu.step_cycle(count);
         let nmi_triggered = old_nmi_line && !self.nmi_line;
         nmi_triggered
     }
 
-    fn read_mem(&self, address: u16) -> u8 {
+    fn read_mem(&mut self, address: u16) -> u8 {
         if address >= 0x2000 && address < 0x2008 {
-            self.ppu.borrow_mut().read_mem(address)
+            self.ppu.read_mem(address)
         }
         else {
             self.memory[address as usize]
@@ -66,7 +102,7 @@ impl Machine {
 
     fn write_mem(&mut self, address: u16, value: u8) {
         if address >= 0x2000 && address < 0x2008 {
-            self.ppu.borrow_mut().write_mem(address, value);
+            self.ppu.write_mem(address, value);
         }
         else {
             self.memory[address as usize] = value;
