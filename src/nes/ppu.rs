@@ -18,6 +18,8 @@ pub struct Ppu<'a> {
     vram_addr_increment: u16,
     gen_nmi_at_vblank: bool,
     pub mem_read_mut_enabled: bool,
+    background_leftmost_enabled: bool,
+    sprites_leftmost_enabled: bool,
     background_enabled: bool,
     sprites_enabled: bool,
     pub memory: Vec<u8>,
@@ -61,6 +63,8 @@ impl<'a> Ppu<'a> {
             vram_addr_increment: 1,
             gen_nmi_at_vblank: false,
             mem_read_mut_enabled: true,
+            background_leftmost_enabled: true,
+            sprites_leftmost_enabled: true,
             background_enabled: true,
             sprites_enabled: true,
             memory: vec![0; 0x10000],
@@ -111,7 +115,8 @@ impl<'a> Ppu<'a> {
     }
 
     fn get_background_pixel(&self) -> u8 {
-        if !self.background_enabled {
+        if !self.background_enabled ||
+            (self.cycle_count < 8 && !self.background_leftmost_enabled) {
             return 0;
         }
 
@@ -156,34 +161,32 @@ impl<'a> Ppu<'a> {
     }
 
     fn get_sprite_pixel(&self) -> (u8, SpritePriority) {
-        if self.sprites_enabled {
+        if self.sprites_enabled && (self.cycle_count >= 8 || self.sprites_leftmost_enabled) {
             let x = self.cycle_count;
             let y = self.scan_line;
             for i in 0..8 {
                 let sprite_y = self.secondary_oam[i*4] as i16;
-                if sprite_y != 0xFF {
-                    let sprite_x = self.secondary_oam[i*4 + 3] as u16;
-                    if sprite_x <= x && x < sprite_x + 8 {
-                        let tile_x = x - sprite_x;
-                        let tile_y = (y - sprite_y) as u16;
-                        let tile_index = self.secondary_oam[i*4 + 1] as u16;
-                        let pattern_address_lower =
-                            self.sprite_pattern_table_addr | (tile_index << 4) | tile_y;
-                        let pattern_address_upper = pattern_address_lower | 0x0008;
+                let sprite_x = self.secondary_oam[i*4 + 3] as u16;
+                if sprite_x <= x && x < sprite_x + 8 {
+                    let tile_x = x - sprite_x;
+                    let tile_y = (y - 1 - sprite_y) as u16;
+                    let tile_index = self.secondary_oam[i*4 + 1] as u16;
+                    let pattern_address_lower =
+                        self.sprite_pattern_table_addr | (tile_index << 4) | tile_y;
+                    let pattern_address_upper = pattern_address_lower | 0x0008;
 
-                        let bitmap_row_lower = self.read_mem_ppu(pattern_address_lower);
-                        let bitmap_row_upper = self.read_mem_ppu(pattern_address_upper);
+                    let bitmap_row_lower = self.read_mem_ppu(pattern_address_lower);
+                    let bitmap_row_upper = self.read_mem_ppu(pattern_address_upper);
 
-                        let pattern_bit_lower = bitmap_row_lower & (0x80 >> tile_x) != 0;
-                        let pattern_bit_upper = bitmap_row_upper & (0x80 >> tile_x) != 0;
-                        let pattern_bits = (if pattern_bit_upper {2} else {0}) +
-                            (if pattern_bit_lower {1} else {0});
+                    let pattern_bit_lower = bitmap_row_lower & (0x80 >> tile_x) != 0;
+                    let pattern_bit_upper = bitmap_row_upper & (0x80 >> tile_x) != 0;
+                    let pattern_bits = (if pattern_bit_upper {2} else {0}) +
+                        (if pattern_bit_lower {1} else {0});
 
-                        let palette_bits = 4 + (self.secondary_oam[i*4 + 2] & 0x3);
-                        let index = (palette_bits << 2) | pattern_bits;
+                    let palette_bits = 4 + (self.secondary_oam[i*4 + 2] & 0x3);
+                    let index = (palette_bits << 2) | pattern_bits;
 
-                        return (index, SpritePriority::Front);
-                    }
+                    return (index, SpritePriority::Front);
                 }
             }
         }
@@ -218,13 +221,16 @@ impl<'a> Ppu<'a> {
         let y = self.scan_line as i32;
 
         if y >= 0 && y < 240 && x < 256 {
+            if x < 8 && y < 8 {
+                println!("x {} y {} bg {} sp {}",
+                         x, y, background_index, sprite_index);
+            }
             self.renderer.draw_point(Point::new(x, y)).unwrap();
         }
     }
 
     pub fn step_cycle(&mut self, count: u16) -> bool {
         for _ in 0..count*3 {
-            self.cycle_count += 1;
             if self.background_enabled || self.sprites_enabled {
                 if self.scan_line == -1 {
                     if self.cycle_count >= 280 && self.cycle_count <= 304 {
@@ -276,12 +282,13 @@ impl<'a> Ppu<'a> {
                     self.oam_addr = 0;
                 }
             }
+            self.cycle_count += 1;
             if self.cycle_count >= 341 {
                 self.cycle_count -= 341;
-                self.scan_line += 1;
                 if self.scan_line >= 0 && self.scan_line < 240 {
                     self.prepare_sprites();
                 }
+                self.scan_line += 1;
                 if self.scan_line == 241 {
                     self.vblank = true;
                 }
@@ -354,6 +361,8 @@ impl<'a> Ppu<'a> {
                 self.sprite_pattern_table_addr = if value & 0x08 != 0 { 0x1000 } else { 0 };
             }
             0x2001 => {
+                self.background_leftmost_enabled = value & 0x02 != 0;
+                self.sprites_leftmost_enabled = value & 0x04 != 0;
                 self.background_enabled = value & 0x08 != 0;
                 self.sprites_enabled = value & 0x10 != 0;
             }
