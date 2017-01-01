@@ -104,6 +104,10 @@ impl<'a> Machine<'a> {
         if address >= 0x2000 && address < 0x2008 {
             self.ppu.write_mem(address, value);
         }
+        else if address == 0x4014 {
+            let ref memory = self.memory;
+            self.ppu.perform_dma(&memory, value as u16 * 0x100);
+        }
         else {
             self.memory[address as usize] = value;
         }

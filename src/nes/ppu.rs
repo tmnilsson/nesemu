@@ -21,12 +21,21 @@ pub struct Ppu<'a> {
     background_enabled: bool,
     sprites_enabled: bool,
     pub memory: Vec<u8>,
+    oam: [u8; 256],
+    secondary_oam: [u8; 32],
+    oam_addr: u8,
     reg: Registers,
     bg_pattern_table_addr: u16,
+    sprite_pattern_table_addr: u16,
     renderer: Renderer<'a>,
     colors: Vec<u8>,
 }
 
+#[derive(PartialEq)]
+enum SpritePriority {
+    Back,
+    Front
+}
 
 fn copy_bits(dest: u16, src: u16, mask: u16) -> u16 {
     let tmp = dest & !mask;
@@ -55,8 +64,12 @@ impl<'a> Ppu<'a> {
             background_enabled: true,
             sprites_enabled: true,
             memory: vec![0; 0x10000],
+            oam: [0; 256],
+            secondary_oam: [0xFF; 32],
+            oam_addr: 0,
             reg: Registers { t: 0, v: 0, x: 0, w: false },
             bg_pattern_table_addr: 0x0000,
+            sprite_pattern_table_addr: 0x0000,
             renderer: renderer,
             colors: vec![
                 84, 84, 84,     0, 30, 116,     8, 16, 144,     48, 0, 136,
@@ -97,9 +110,9 @@ impl<'a> Ppu<'a> {
         self.scan_line = scan_line;
     }
 
-    pub fn draw_pixel(&mut self) {
+    fn get_background_pixel(&self) -> u8 {
         if !self.background_enabled {
-            return;
+            return 0;
         }
 
         let tile_address = 0x2000 | (self.reg.v & 0x0FFF);
@@ -139,7 +152,63 @@ impl<'a> Ppu<'a> {
         };
 
         let palette_index = (palette_bits << 2) | pattern_bits;
-        let palette_address = 0x3F00 + (palette_index as u16);
+        palette_index
+    }
+
+    fn get_sprite_pixel(&self) -> (u8, SpritePriority) {
+        if self.sprites_enabled {
+            let x = self.cycle_count;
+            let y = self.scan_line;
+            for i in 0..8 {
+                let sprite_y = self.secondary_oam[i*4] as i16;
+                if sprite_y != 0xFF {
+                    let sprite_x = self.secondary_oam[i*4 + 3] as u16;
+                    if sprite_x <= x && x < sprite_x + 8 {
+                        let tile_x = x - sprite_x;
+                        let tile_y = (y - sprite_y) as u16;
+                        let tile_index = self.secondary_oam[i*4 + 1] as u16;
+                        let pattern_address_lower =
+                            self.sprite_pattern_table_addr | (tile_index << 4) | tile_y;
+                        let pattern_address_upper = pattern_address_lower | 0x0008;
+
+                        let bitmap_row_lower = self.read_mem_ppu(pattern_address_lower);
+                        let bitmap_row_upper = self.read_mem_ppu(pattern_address_upper);
+
+                        let pattern_bit_lower = bitmap_row_lower & (0x80 >> tile_x) != 0;
+                        let pattern_bit_upper = bitmap_row_upper & (0x80 >> tile_x) != 0;
+                        let pattern_bits = (if pattern_bit_upper {2} else {0}) +
+                            (if pattern_bit_lower {1} else {0});
+
+                        let palette_bits = 4 + (self.secondary_oam[i*4 + 2] & 0x3);
+                        let index = (palette_bits << 2) | pattern_bits;
+
+                        return (index, SpritePriority::Front);
+                    }
+                }
+            }
+        }
+        return (0, SpritePriority::Back);
+    }
+
+    fn draw_pixel(&mut self) {
+        let background_index = self.get_background_pixel();
+        let (sprite_index, prio) = self.get_sprite_pixel();
+        let index = if sprite_index != 0 && background_index != 0 {
+            if prio == SpritePriority::Front {
+                sprite_index
+            }
+            else {
+                background_index
+            }
+        }
+        else if sprite_index != 0 {
+            sprite_index
+        }
+        else {
+            background_index
+        };
+
+        let palette_address = 0x3F00 + (index as u16);
         let color_index = self.read_mem_ppu(palette_address) as usize;
         let red = self.colors[color_index * 3 + 0];
         let green = self.colors[color_index * 3 + 1];
@@ -203,10 +272,16 @@ impl<'a> Ppu<'a> {
                     }
                     self.draw_pixel();
                 }
+                if self.cycle_count >= 257 && self.cycle_count <= 320 {
+                    self.oam_addr = 0;
+                }
             }
             if self.cycle_count >= 341 {
                 self.cycle_count -= 341;
                 self.scan_line += 1;
+                if self.scan_line >= 0 && self.scan_line < 240 {
+                    self.prepare_sprites();
+                }
                 if self.scan_line == 241 {
                     self.vblank = true;
                 }
@@ -221,9 +296,26 @@ impl<'a> Ppu<'a> {
         nmi_line
     }
 
+    fn prepare_sprites(&mut self) {
+        for i in 0..32 {
+            self.secondary_oam[i] = 0xFF;
+        }
+        let mut offset = 0;
+        let mut offset_2nd = 0;
+        while offset < 256 && offset_2nd < 32 {
+            let y = self.oam[offset] as i16;
+            if self.scan_line >= y && self.scan_line < y + 8 {
+                self.secondary_oam[offset_2nd..offset_2nd + 4].
+                    clone_from_slice(&self.oam[offset..offset + 4]);
+                offset_2nd += 4;
+            }
+            offset += 4;
+        }
+    }
+
     pub fn read_mem(&mut self, cpu_address: u16) -> u8 {
         match cpu_address {
-            0x2000 | 0x2001 | 0x2005 | 0x2006 => { // Write-only registers, return 0
+            0x2000 | 0x2001 | 0x2003 | 0x2005 | 0x2006 => { // Write-only registers, return 0
                 0
             }
             0x2002 => {
@@ -233,6 +325,14 @@ impl<'a> Ppu<'a> {
                     self.reg.w = false;
                 }
                 value
+            }
+            0x2004 => {
+                if self.vblank {
+                    self.oam[self.oam_addr as usize]
+                }
+                else {
+                    0
+                }
             }
             0x2007 => {
                 let addr = self.reg.v;
@@ -250,11 +350,21 @@ impl<'a> Ppu<'a> {
                 self.vram_addr_increment = if (value & 0x04) == 0 { 1 } else { 32 };
                 self.gen_nmi_at_vblank = (value & 0x80) != 0;
                 self.reg.t = copy_bits(self.reg.t, value as u16, 0x0003);
-                self.bg_pattern_table_addr = if value & 0x10 != 0 { 0x1000 } else { 0x0000 };
+                self.bg_pattern_table_addr = if value & 0x10 != 0 { 0x1000 } else { 0 };
+                self.sprite_pattern_table_addr = if value & 0x08 != 0 { 0x1000 } else { 0 };
             }
             0x2001 => {
                 self.background_enabled = value & 0x08 != 0;
                 self.sprites_enabled = value & 0x10 != 0;
+            }
+            0x2003 => {
+                self.oam_addr = value;
+            }
+            0x2004 => {
+                if self.vblank {
+                    self.oam[self.oam_addr as usize] = value;
+                    self.oam_addr.wrapping_add(1);
+                }
             }
             0x2005 => {
                 if !self.reg.w {
@@ -285,6 +395,12 @@ impl<'a> Ppu<'a> {
             }
             _ => panic!("Unimplemented write address: {:04X}", cpu_address)
         }
+    }
+
+    pub fn perform_dma(&mut self, memory: &[u8], start_addr: u16) {
+        let end_addr = start_addr + 256;
+        self.oam.clone_from_slice(&memory[start_addr as usize .. end_addr as usize]);
+        self.step_cycle(513 * 3);
     }
 
     fn read_mem_ppu(&self, ppu_address: u16) -> u8 {

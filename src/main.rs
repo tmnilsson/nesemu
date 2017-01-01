@@ -61,9 +61,9 @@ fn main()
 {
     let mut machine = nes::Machine::new();
     let mut cpu = nes::cpu::Cpu::new();
-    let rom = nes::read_nes_file("/home/tomas/Downloads/background/background.nes");
+    //let rom = nes::read_nes_file("/home/tomas/Downloads/background/background.nes");
     //let rom = nes::read_nes_file("nestest.nes");
-    //let rom = nes::read_nes_file("/home/tomas/Downloads/sprites/sprites.nes");
+    let rom = nes::read_nes_file("/home/tomas/Downloads/sprites/sprites.nes");
     machine.load_rom(rom);
     cpu.reset(&mut machine);
 
