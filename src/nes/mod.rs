@@ -2,6 +2,7 @@ extern crate sdl2;
 
 mod ppu;
 pub mod cpu;
+mod controller;
 
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -12,6 +13,7 @@ use std::io::Read;
 
 pub struct Machine<'a> {
     pub ppu: ppu::Ppu<'a>,
+    controller: controller::Controller,
     memory: Vec<u8>,
     nmi_line: bool,
     sdl_context: sdl2::Sdl,
@@ -35,6 +37,7 @@ impl<'a> Machine<'a> {
         }
         Machine {
             ppu: ppu::Ppu::new(&mut sdl_context),
+            controller: controller::Controller::new(),
             memory: memory,
             nmi_line: true,
             sdl_context: sdl_context,
@@ -67,6 +70,12 @@ impl<'a> Machine<'a> {
                 Event::KeyDown { keycode: Some(Keycode::Space), .. } => {
                     println!("Space");
                 }
+                Event::KeyDown { keycode: Some(c), .. } => {
+                    self.controller.handle_key_down(c);
+                }
+                Event::KeyUp { keycode: Some(c), .. } => {
+                    self.controller.handle_key_up(c);
+                }
                 _ => {}
             }
         }
@@ -95,6 +104,9 @@ impl<'a> Machine<'a> {
         if address >= 0x2000 && address < 0x2008 {
             self.ppu.read_mem(address)
         }
+        else if address >= 0x4016 && address < 0x4018 {
+            self.controller.read_mem(address)
+        }
         else {
             self.memory[address as usize]
         }
@@ -107,6 +119,9 @@ impl<'a> Machine<'a> {
         else if address == 0x4014 {
             let ref memory = self.memory;
             self.ppu.perform_dma(&memory, value as u16 * 0x100);
+        }
+        else if address == 0x4016 {
+            self.controller.write_mem(address, value);
         }
         else {
             self.memory[address as usize] = value;

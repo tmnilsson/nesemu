@@ -221,10 +221,6 @@ impl<'a> Ppu<'a> {
         let y = self.scan_line as i32;
 
         if y >= 0 && y < 240 && x < 256 {
-            if x < 8 && y < 8 {
-                println!("x {} y {} bg {} sp {}",
-                         x, y, background_index, sprite_index);
-            }
             self.renderer.draw_point(Point::new(x, y)).unwrap();
         }
     }
