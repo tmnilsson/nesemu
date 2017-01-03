@@ -1,6 +1,7 @@
 extern crate sdl2;
 extern crate time;
 
+use std::env;
 use time::{Duration, PreciseTime};
 
 mod nes;
@@ -61,9 +62,8 @@ fn main()
 {
     let mut machine = nes::Machine::new();
     let mut cpu = nes::cpu::Cpu::new();
-    //let rom = nes::read_nes_file("/home/tomas/Downloads/background/background.nes");
-    //let rom = nes::read_nes_file("nestest.nes");
-    let rom = nes::read_nes_file("/home/tomas/Downloads/controller/controller.nes");
+    let args: Vec<_> = env::args().collect();
+    let rom = nes::read_nes_file(&args[1]);
     machine.load_rom(rom);
     cpu.reset(&mut machine);
 
