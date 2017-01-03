@@ -1015,10 +1015,7 @@ impl Cpu {
                     AddressingMode::ZeroPage => (2, 3),
                     AddressingMode::ZeroPageY => (2, 4),
                     AddressingMode::Absolute => (3, 4),
-//                    AddressingMode::AbsoluteX |
-//                    AddressingMode::AbsoluteY => (3, 5),
                     AddressingMode::IndirectX => (2, 6),
-//                    AddressingMode::IndirectY => (2, 6),
                     _ => panic!("Unexpected addressing mode"),
                     })
             }

@@ -15,6 +15,7 @@ use std::io::BufRead;
 #[cfg(test)]
 use std::io::BufReader;
 
+// Needs nestest.nes and nestest.log from wiki.nesdev.com in same directory
 #[cfg(test)]
 fn test_nestest_rom(verbose: bool) {
     let mut machine = nes::Machine::new();
@@ -81,7 +82,6 @@ fn main()
         if duration.num_milliseconds() < 16 {
             std::thread::sleep((Duration::milliseconds(16) - duration).to_std().unwrap());
         }
-        //println!("duration: {}", prev_time.to(PreciseTime::now()).num_milliseconds());
         prev_time = PreciseTime::now();
     }
 }
