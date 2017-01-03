@@ -186,7 +186,9 @@ impl<'a> Ppu<'a> {
                     let palette_bits = 4 + (self.secondary_oam[i*4 + 2] & 0x3);
                     let index = (palette_bits << 2) | pattern_bits;
 
-                    return (index, SpritePriority::Front);
+                    if pattern_bits != 0 {
+                        return (index, SpritePriority::Front);
+                    }
                 }
             }
         }
@@ -220,9 +222,7 @@ impl<'a> Ppu<'a> {
         let x = self.cycle_count as i32;
         let y = self.scan_line as i32;
 
-        if y >= 0 && y < 240 && x < 256 {
-            self.renderer.draw_point(Point::new(x, y)).unwrap();
-        }
+        self.renderer.draw_point(Point::new(x, y)).unwrap();
     }
 
     pub fn step_cycle(&mut self, count: u16) -> bool {
@@ -234,7 +234,7 @@ impl<'a> Ppu<'a> {
                         self.reg.v = copy_bits(self.reg.v, self.reg.t, 0x7BE0);
                     }
                 }
-                else {
+                else if self.scan_line < 240 {
                     if self.cycle_count == 256 {
                         // increase y
                         if self.reg.v & 0x7000 != 0x7000 {
@@ -271,8 +271,8 @@ impl<'a> Ppu<'a> {
                                 self.reg.v += 1;
                             }
                         }
+                        self.draw_pixel();
                     }
-                    self.draw_pixel();
                 }
                 if self.cycle_count >= 257 && self.cycle_count <= 320 {
                     self.oam_addr = 0;
@@ -385,7 +385,7 @@ impl<'a> Ppu<'a> {
             0x2006 => {
                 if !self.reg.w {
                     self.reg.t = copy_bits(self.reg.t, (value as u16) << 8, 0x3F00);
-                    self.reg.t &= 0x7FFF;
+                    self.reg.t &= 0xBFFF;
                 }
                 else {
                     self.reg.t = copy_bits(self.reg.t, value as u16, 0x00FF);
