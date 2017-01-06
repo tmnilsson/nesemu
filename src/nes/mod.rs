@@ -17,8 +17,14 @@ pub struct Machine<'a> {
     memory: Vec<u8>,
     nmi_line: bool,
     sdl_context: sdl2::Sdl,
+    rom: Option<NesRom>,
 }
 
+#[derive(Debug,Clone,Copy)]
+enum Mapper {
+    NROM,
+    CNROM,
+}
 
 #[allow(dead_code)]
 pub fn get_state_string(cpu: &cpu::Cpu, machine: &mut Machine) -> String {
@@ -41,6 +47,7 @@ impl<'a> Machine<'a> {
             memory: memory,
             nmi_line: true,
             sdl_context: sdl_context,
+            rom: None,
         }
     }
 
@@ -57,7 +64,19 @@ impl<'a> Machine<'a> {
             self.memory[0x8000..0xc000].clone_from_slice(&rom.prg_rom);
             self.memory[0xc000..0x10000].clone_from_slice(&rom.prg_rom);
         }
-        self.ppu.load_chr_rom(&rom.chr_rom);
+        else if rom.prg_rom.len() == 32768 {
+            self.memory[0x8000..0x10000].clone_from_slice(&rom.prg_rom);
+        }
+        let mapper = rom.mapper;
+        match mapper {
+            Mapper::NROM => {
+                self.ppu.load_chr_rom(&rom.chr_rom);
+            }
+            Mapper::CNROM => {
+                self.ppu.load_chr_rom(&rom.chr_rom[0..0x2000]);
+            }
+        }
+        self.rom = Some(rom);
     }
 
     pub fn handle_events(&mut self) -> bool {
@@ -124,7 +143,21 @@ impl<'a> Machine<'a> {
             self.controller.write_mem(address, value);
         }
         else {
-            self.memory[address as usize] = value;
+            match self.rom.as_ref().unwrap().mapper {
+                Mapper::NROM => {
+                    self.memory[address as usize] = value;
+                }
+                Mapper::CNROM => {
+                    if address >= 0x8000 {
+                        let base = value as usize * 0x2000;
+                        self.ppu.load_chr_rom(&self.rom.as_ref().
+                                              unwrap().chr_rom[base .. base + 0x2000]);
+                    }
+                    else {
+                        self.memory[address as usize] = value;
+                    }
+                }
+            }
         }
     }
 }
@@ -134,6 +167,7 @@ pub struct NesRom {
     header: [u8; 16],
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
+    mapper: Mapper,
 }
 
 pub fn read_nes_file(path: &str) -> NesRom {
@@ -153,6 +187,12 @@ pub fn read_nes_file(path: &str) -> NesRom {
     let _has_trainer = data[6] & (1 << 2) == (1 << 2);
     let _has_play_choice_rom = data[7] & (1 << 2) == (1 << 2);
     let _prg_ram_size_8kb_units = data[8];
+    let mapper_u8 = data[7] & 0xF0 | ((_flags6 & 0xF0) >> 4);
+    let mapper = match mapper_u8 {
+        0 => Mapper::NROM,
+        3 => Mapper::CNROM,
+        _ => { panic!("unsupported mapper: {}", mapper_u8); }
+    };
 
     let prg_size = prg_rom_size_16kb_units as usize * 16384;
     let chr_size = chr_rom_size_8kb_units as usize * 8192;
@@ -163,5 +203,6 @@ pub fn read_nes_file(path: &str) -> NesRom {
 
     NesRom { header: header,
              prg_rom: prg_rom,
-             chr_rom: chr_rom }
+             chr_rom: chr_rom,
+             mapper: mapper}
 }
