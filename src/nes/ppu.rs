@@ -34,6 +34,8 @@ pub struct Ppu<'a> {
     reg: Registers,
     bg_pattern_table_addr: u16,
     sprite_pattern_table_addr: u16,
+    sprite0_enabled: bool,
+    sprite0_hit: bool,
     renderer: Renderer<'a>,
     colors: Vec<u8>,
 }
@@ -82,6 +84,8 @@ impl<'a> Ppu<'a> {
                              bg_attribute_upper: 0, bg_attribute_lower: 0 },
             bg_pattern_table_addr: 0x0000,
             sprite_pattern_table_addr: 0x0000,
+            sprite0_enabled: false,
+            sprite0_hit: false,
             renderer: renderer,
             colors: vec![
                 84, 84, 84,     0, 30, 116,     8, 16, 144,     48, 0, 136,
@@ -140,7 +144,7 @@ impl<'a> Ppu<'a> {
                 (bg_pattern_upper << 1) | (bg_pattern_lower << 0);
     }
 
-    fn get_sprite_pixel(&self) -> (u8, SpritePriority) {
+    fn get_sprite_pixel(&self) -> (u8, SpritePriority, bool) {
         if self.sprites_enabled && (self.cycle_count >= 8 || self.sprites_leftmost_enabled) {
             let x = self.cycle_count;
             let y = self.scan_line;
@@ -167,18 +171,21 @@ impl<'a> Ppu<'a> {
                     let index = (palette_bits << 2) | pattern_bits;
 
                     if pattern_bits != 0 {
-                        return (index, SpritePriority::Front);
+                        return (index, SpritePriority::Front, i == 0 && self.sprite0_enabled);
                     }
                 }
             }
         }
-        return (0, SpritePriority::Back);
+        return (0, SpritePriority::Back, false);
     }
 
     fn draw_pixel(&mut self) {
         let background_index = self.get_background_pixel();
-        let (sprite_index, prio) = self.get_sprite_pixel();
+        let (sprite_index, prio, sprite0) = self.get_sprite_pixel();
         let index = if sprite_index != 0 && background_index != 0 {
+            if sprite0 {
+                self.sprite0_hit = true;
+            }
             if prio == SpritePriority::Front {
                 sprite_index
             }
@@ -344,6 +351,8 @@ impl<'a> Ppu<'a> {
         for i in 0..32 {
             self.secondary_oam[i] = 0xFF;
         }
+        self.sprite0_enabled = false;
+        self.sprite0_hit = false;
         let mut offset = 0;
         let mut offset_2nd = 0;
         while offset < 256 && offset_2nd < 32 {
@@ -352,6 +361,9 @@ impl<'a> Ppu<'a> {
                 self.secondary_oam[offset_2nd..offset_2nd + 4].
                     clone_from_slice(&self.oam[offset..offset + 4]);
                 offset_2nd += 4;
+                if offset == 0 {
+                    self.sprite0_enabled = true;
+                }
             }
             offset += 4;
         }
@@ -363,7 +375,8 @@ impl<'a> Ppu<'a> {
                 0
             }
             0x2002 => {
-                let value = if self.vblank {0x80} else {0x00};
+                let mut value = if self.vblank {0x80} else {0x00};
+                value |= if self.sprite0_hit {0x40} else {0x00};
                 if self.mem_read_mut_enabled {
                     self.vblank = false;
                     self.reg.w = false;
