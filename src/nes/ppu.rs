@@ -446,7 +446,7 @@ impl<'a> Ppu<'a> {
     pub fn perform_dma(&mut self, memory: &[u8], start_addr: u16) {
         let end_addr = start_addr + 256;
         self.oam.clone_from_slice(&memory[start_addr as usize .. end_addr as usize]);
-        self.step_cycle(513 * 3);
+        self.step_cycle(513);
     }
 
     fn read_mem_ppu(&self, ppu_address: u16) -> u8 {
