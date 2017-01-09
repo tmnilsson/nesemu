@@ -9,6 +9,11 @@ struct Registers {
     t: u16,
     x: u8,
     w: bool,
+    bg_pattern_upper: u16,
+    bg_pattern_lower: u16,
+    bg_attribute_latch: u8,
+    bg_attribute_upper: u8,
+    bg_attribute_lower: u8,
 }
 
 pub struct Ppu<'a> {
@@ -71,7 +76,10 @@ impl<'a> Ppu<'a> {
             oam: [0; 256],
             secondary_oam: [0xFF; 32],
             oam_addr: 0,
-            reg: Registers { t: 0, v: 0, x: 0, w: false },
+            reg: Registers { t: 0, v: 0, x: 0, w: false,
+                             bg_pattern_upper: 0, bg_pattern_lower: 0,
+                             bg_attribute_latch: 0,
+                             bg_attribute_upper: 0, bg_attribute_lower: 0 },
             bg_pattern_table_addr: 0x0000,
             sprite_pattern_table_addr: 0x0000,
             renderer: renderer,
@@ -120,44 +128,16 @@ impl<'a> Ppu<'a> {
             return 0;
         }
 
-        let tile_address = 0x2000 | (self.reg.v & 0x0FFF);
-        let tile = self.read_mem_ppu(tile_address) as u16;
-
-        let attribute_address = 0x23C0 | (self.reg.v & 0x0C00)
-            | ((self.reg.v >> 4) & 0x38) | ((self.reg.v >> 2) & 0x07);
-        let attribute = self.read_mem_ppu(attribute_address);
-
-        let fine_y = self.reg.v >> 12;
-        let pattern_address_lower = self.bg_pattern_table_addr | (tile << 4) | fine_y;
-        let pattern_address_upper = self.bg_pattern_table_addr | (tile << 4) | 0x0008 | fine_y;
-
-        let bitmap_row_lower = self.read_mem_ppu(pattern_address_lower);
-        let bitmap_row_upper = self.read_mem_ppu(pattern_address_upper);
-
-        let xoffset = (self.cycle_count % 8) as u8;
-        let pattern_bit_lower = bitmap_row_lower & (0x80 >> (self.reg.x + xoffset)) != 0;
-        let pattern_bit_upper = bitmap_row_upper & (0x80 >> (self.reg.x + xoffset)) != 0;
-        let pattern_bits = (if pattern_bit_upper {2} else {0}) +
-            (if pattern_bit_lower {1} else {0});
-
-        let attr_x = self.reg.v & 0x0002 != 0;
-        let attr_y = self.reg.v & 0x0040 != 0;
-
-        let palette_bits = if !attr_x && !attr_y {
-            attribute & 0x3
-        }
-        else if attr_x && !attr_y {
-            (attribute >> 2) & 0x3
-        }
-        else if !attr_x && attr_y {
-            (attribute >> 4) & 0x3
-        }
-        else {
-            (attribute >> 6) & 0x3
-        };
-
-        let palette_index = (palette_bits << 2) | pattern_bits;
-        palette_index
+        let bg_attribute_upper =
+            if self.reg.bg_attribute_upper & (0x80 >> self.reg.x) != 0 { 1 } else { 0 };
+        let bg_attribute_lower =
+            if self.reg.bg_attribute_lower & (0x80 >> self.reg.x) != 0 { 1 } else { 0 };
+        let bg_pattern_upper =
+            if self.reg.bg_pattern_upper & (0x8000 >> self.reg.x) != 0 { 1 } else { 0 };
+        let bg_pattern_lower =
+            if self.reg.bg_pattern_lower & (0x8000 >> self.reg.x) != 0 { 1 } else { 0 };
+        return (bg_attribute_upper << 3) | (bg_attribute_lower << 2) |
+                (bg_pattern_upper << 1) | (bg_pattern_lower << 0);
     }
 
     fn get_sprite_pixel(&self) -> (u8, SpritePriority) {
@@ -225,6 +205,45 @@ impl<'a> Ppu<'a> {
         self.renderer.draw_point(Point::new(x, y)).unwrap();
     }
 
+    fn load_bg_tile(&mut self) {
+        // pattern
+        let tile_address = 0x2000 | (self.reg.v & 0x0FFF);
+        let tile = self.read_mem_ppu(tile_address) as u16;
+
+        let fine_y = self.reg.v >> 12;
+        let pattern_address_lower = self.bg_pattern_table_addr | (tile << 4) | fine_y;
+        let pattern_address_upper = pattern_address_lower + 8;
+
+        let bitmap_row_lower = self.read_mem_ppu(pattern_address_lower) as u16;
+        let bitmap_row_upper = self.read_mem_ppu(pattern_address_upper) as u16;
+
+        self.reg.bg_pattern_lower |= bitmap_row_lower;
+        self.reg.bg_pattern_upper |= bitmap_row_upper;
+
+        // attribute
+        let attribute_address = 0x23C0 | (self.reg.v & 0x0C00)
+            | ((self.reg.v >> 4) & 0x38) | ((self.reg.v >> 2) & 0x07);
+        let attribute = self.read_mem_ppu(attribute_address);
+
+        let attr_x = self.reg.v & 0x0002 != 0;
+        let attr_y = self.reg.v & 0x0040 != 0;
+
+        let palette_bits = if !attr_x && !attr_y {
+            attribute & 0x3
+        }
+        else if attr_x && !attr_y {
+            (attribute >> 2) & 0x3
+        }
+        else if !attr_x && attr_y {
+            (attribute >> 4) & 0x3
+        }
+        else {
+            (attribute >> 6) & 0x3
+        };
+
+        self.reg.bg_attribute_latch = palette_bits;
+    }
+
     pub fn step_cycle(&mut self, count: u16) -> bool {
         for _ in 0..count*3 {
             if self.background_enabled || self.sprites_enabled {
@@ -260,18 +279,40 @@ impl<'a> Ppu<'a> {
                         // copy horizontal bits
                         self.reg.v = copy_bits(self.reg.v, self.reg.t, 0x041F);
                     }
-                    else if self.cycle_count < 256 {
-                        if self.cycle_count != 0 && self.cycle_count % 8 == 0 {
-                            // increase x
-                            if self.reg.v & 0x001F == 31 {
-                                self.reg.v &= !0x001F;
-                                self.reg.v ^= 0x0400;
-                            }
-                            else {
-                                self.reg.v += 1;
+                    if (self.cycle_count > 0 && self.cycle_count <= 256) ||
+                        (self.cycle_count == 328 || self.cycle_count == 336) {
+                        if self.cycle_count % 8 == 0 {
+
+                            if self.scan_line == -1 && self.cycle_count >= 328 ||
+                                self.scan_line >= 0 && self.scan_line < 240 {
+
+                                self.load_bg_tile();
+
+                                // increase x
+                                if self.reg.v & 0x001F == 31 {
+                                    self.reg.v &= !0x001F;
+                                    self.reg.v ^= 0x0400;
+                                }
+                                else {
+                                    self.reg.v += 1;
+                                }
                             }
                         }
-                        self.draw_pixel();
+                    }
+                }
+                if self.scan_line >= 0 && self.scan_line < 240 && self.cycle_count < 256 {
+                    self.draw_pixel();
+                }
+                if self.cycle_count < 336 {
+                    self.reg.bg_pattern_lower <<= 1;
+                    self.reg.bg_pattern_upper <<= 1;
+                    self.reg.bg_attribute_lower <<= 1;
+                    if self.reg.bg_attribute_latch & 0x1 != 0 {
+                        self.reg.bg_attribute_lower |= 0x01;
+                    }
+                    self.reg.bg_attribute_upper <<= 1;
+                    if self.reg.bg_attribute_latch & 0x2 != 0 {
+                        self.reg.bg_attribute_upper |= 0x01;
                     }
                 }
                 if self.cycle_count >= 257 && self.cycle_count <= 320 {
@@ -352,7 +393,7 @@ impl<'a> Ppu<'a> {
             0x2000 => {
                 self.vram_addr_increment = if (value & 0x04) == 0 { 1 } else { 32 };
                 self.gen_nmi_at_vblank = (value & 0x80) != 0;
-                self.reg.t = copy_bits(self.reg.t, value as u16, 0x0003);
+                self.reg.t = copy_bits(self.reg.t, (value as u16) << 10, 0x0C00);
                 self.bg_pattern_table_addr = if value & 0x10 != 0 { 0x1000 } else { 0 };
                 self.sprite_pattern_table_addr = if value & 0x08 != 0 { 0x1000 } else { 0 };
             }
