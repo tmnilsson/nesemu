@@ -34,6 +34,7 @@ pub struct Ppu<'a> {
     reg: Registers,
     bg_pattern_table_addr: u16,
     sprite_pattern_table_addr: u16,
+    sprite_height: u8,
     sprite0_enabled: bool,
     sprite0_hit: bool,
     renderer: Renderer<'a>,
@@ -84,6 +85,7 @@ impl<'a> Ppu<'a> {
                              bg_attribute_upper: 0, bg_attribute_lower: 0 },
             bg_pattern_table_addr: 0x0000,
             sprite_pattern_table_addr: 0x0000,
+            sprite_height: 8,
             sprite0_enabled: false,
             sprite0_hit: false,
             renderer: renderer,
@@ -151,10 +153,28 @@ impl<'a> Ppu<'a> {
             for i in 0..8 {
                 let sprite_y = self.secondary_oam[i*4] as i16;
                 let sprite_x = self.secondary_oam[i*4 + 3] as u16;
-                if sprite_x <= x && x < sprite_x + 8 {
-                    let tile_x = x - sprite_x;
-                    let tile_y = (y - 1 - sprite_y) as u16;
+                if sprite_x <= x && x < sprite_x + 8 && sprite_y < 0xEF {
+                    let mut tile_x = x - sprite_x;
+                    let mut tile_y = (y - 1 - sprite_y) as u16;
+
                     let tile_index = self.secondary_oam[i*4 + 1] as u16;
+                    let palette_bits = 4 + (self.secondary_oam[i*4 + 2] & 0x3);
+                    let priority = if self.secondary_oam[i*4 + 2] & 0x20 != 0 {
+                        SpritePriority::Back
+                    }
+                    else {
+                        SpritePriority::Front
+                    };
+                    let flip_horiz = self.secondary_oam[i*4 + 2] & 0x40 != 0;
+                    let flip_vert = self.secondary_oam[i*4 + 2] & 0x80 != 0;
+
+                    if flip_horiz {
+                        tile_x = 7 - tile_x;
+                    }
+                    if flip_vert {
+                        tile_y = 7 - tile_y;
+                    }
+
                     let pattern_address_lower =
                         self.sprite_pattern_table_addr | (tile_index << 4) | tile_y;
                     let pattern_address_upper = pattern_address_lower | 0x0008;
@@ -167,11 +187,10 @@ impl<'a> Ppu<'a> {
                     let pattern_bits = (if pattern_bit_upper {2} else {0}) +
                         (if pattern_bit_lower {1} else {0});
 
-                    let palette_bits = 4 + (self.secondary_oam[i*4 + 2] & 0x3);
                     let index = (palette_bits << 2) | pattern_bits;
 
                     if pattern_bits != 0 {
-                        return (index, SpritePriority::Front, i == 0 && self.sprite0_enabled);
+                        return (index, priority, i == 0 && self.sprite0_enabled);
                     }
                 }
             }
@@ -182,7 +201,7 @@ impl<'a> Ppu<'a> {
     fn draw_pixel(&mut self) {
         let background_index = self.get_background_pixel();
         let (sprite_index, prio, sprite0) = self.get_sprite_pixel();
-        let index = if sprite_index != 0 && background_index != 0 {
+        let index = if sprite_index & 0x3 != 0 && background_index & 0x3 != 0 {
             if sprite0 {
                 self.sprite0_hit = true;
             }
@@ -339,6 +358,7 @@ impl<'a> Ppu<'a> {
                 if self.scan_line >= 261 {
                     self.scan_line = -1;
                     self.vblank = false;
+                    self.sprite0_hit = false;
                 }
             }
         }
@@ -352,7 +372,6 @@ impl<'a> Ppu<'a> {
             self.secondary_oam[i] = 0xFF;
         }
         self.sprite0_enabled = false;
-        self.sprite0_hit = false;
         let mut offset = 0;
         let mut offset_2nd = 0;
         while offset < 256 && offset_2nd < 32 {
@@ -409,6 +428,10 @@ impl<'a> Ppu<'a> {
                 self.reg.t = copy_bits(self.reg.t, (value as u16) << 10, 0x0C00);
                 self.bg_pattern_table_addr = if value & 0x10 != 0 { 0x1000 } else { 0 };
                 self.sprite_pattern_table_addr = if value & 0x08 != 0 { 0x1000 } else { 0 };
+                self.sprite_height = if value & 0x20 != 0 { 16 } else { 8 };
+                if self.sprite_height != 8 {
+                    panic!("too high");
+                }
             }
             0x2001 => {
                 self.background_leftmost_enabled = value & 0x02 != 0;
