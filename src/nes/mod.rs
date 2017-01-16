@@ -3,6 +3,7 @@ extern crate sdl2;
 mod ppu;
 pub mod cpu;
 mod controller;
+mod cartridge;
 
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -14,10 +15,10 @@ use std::io::Read;
 pub struct Machine<'a> {
     pub ppu: ppu::Ppu<'a>,
     controller: controller::Controller,
-    memory: Vec<u8>,
+    ram: Vec<u8>,
     nmi_line: bool,
     sdl_context: sdl2::Sdl,
-    rom: Option<NesRom>,
+    cartridge: Option<cartridge::Cartridge>,
 }
 
 #[derive(Debug,Clone,Copy)]
@@ -36,47 +37,24 @@ impl<'a> Machine<'a> {
     pub fn new() -> Self {
         let mut sdl_context = sdl2::init().unwrap();
 
-        let mut memory = vec![0; 0x10000];
-        // Set I/O registers to FF
-        for i in 0x4000..0x4020 {
-            memory[i] = 0xFF;
-        }
+        let ram = vec![0; 0x800];
         Machine {
             ppu: ppu::Ppu::new(&mut sdl_context),
             controller: controller::Controller::new(),
-            memory: memory,
+            ram: ram,
             nmi_line: true,
             sdl_context: sdl_context,
-            rom: None,
+            cartridge: None,
         }
-    }
-
-    pub fn clear(&mut self) {
-        self.ppu.clear();
     }
 
     pub fn present(&mut self) {
-        self.ppu.present();
+        let cartridge = self.cartridge.as_ref().unwrap();
+        self.ppu.present(cartridge);
     }
 
     pub fn load_rom(&mut self, rom: NesRom) {
-        if rom.prg_rom.len() == 16384 {
-            self.memory[0x8000..0xc000].clone_from_slice(&rom.prg_rom);
-            self.memory[0xc000..0x10000].clone_from_slice(&rom.prg_rom);
-        }
-        else if rom.prg_rom.len() == 32768 {
-            self.memory[0x8000..0x10000].clone_from_slice(&rom.prg_rom);
-        }
-        let mapper = rom.mapper;
-        match mapper {
-            Mapper::NROM => {
-                self.ppu.load_chr_rom(&rom.chr_rom);
-            }
-            Mapper::CNROM => {
-                self.ppu.load_chr_rom(&rom.chr_rom[0..0x2000]);
-            }
-        }
-        self.rom = Some(rom);
+        self.cartridge = Some(cartridge::Cartridge::new(rom));
     }
 
     pub fn handle_events(&mut self) -> bool {
@@ -114,52 +92,71 @@ impl<'a> Machine<'a> {
     
     fn step_cycle(&mut self, count: u16) -> bool {
         let old_nmi_line = self.nmi_line;
-        self.nmi_line = self.ppu.step_cycle(count);
+        let cart = self.cartridge.as_mut().unwrap();
+        self.nmi_line = self.ppu.step_cycle(count, cart);
         let nmi_triggered = old_nmi_line && !self.nmi_line;
         nmi_triggered
     }
 
     fn read_mem(&mut self, address: u16) -> u8 {
-        if address >= 0x2000 && address < 0x2008 {
-            self.ppu.read_mem(address)
+        if address < 0x2000 {
+            let ram_address = address & 0x7FF;
+            self.ram[ram_address as usize]
         }
-        else if address >= 0x4016 && address < 0x4018 {
+        else if address < 0x4000 {
+            let reg_address = 0x2000 + ((address - 0x2000) & 0x7);
+            let cartridge = self.cartridge.as_mut().unwrap();
+            self.ppu.read_mem(cartridge, reg_address)
+        }
+        else if address < 0x4016 {
+            //panic!("apu address {:04X} not implemented", address);
+            0xFF
+        }
+        else if address < 0x4018 {
             self.controller.read_mem(address)
         }
+        else if address < 0x8000 {
+            0xFF
+        }
         else {
-            self.memory[address as usize]
+            self.cartridge.as_ref().unwrap().read_mem_cpu(address)
         }
     }
 
     fn write_mem(&mut self, address: u16, value: u8) {
-        if address >= 0x2000 && address < 0x2008 {
-            self.ppu.write_mem(address, value);
+        if address < 0x2000 {
+            let ram_address = address & 0x7FF;
+            self.ram[ram_address as usize] = value;
+        }
+        else if address < 0x4000 {
+            let reg_address = 0x2000 + ((address - 0x2000) & 0x7);
+            let cartridge = self.cartridge.as_mut().unwrap();
+            self.ppu.write_mem(reg_address, value, cartridge);
+        }
+        else if address < 0x4014 {
         }
         else if address == 0x4014 {
-            let ref memory = self.memory;
-            self.ppu.perform_dma(&memory, value as u16 * 0x100);
+            let ref ram = self.ram;
+            let cartridge = self.cartridge.as_mut().unwrap();
+            self.ppu.perform_dma(cartridge, &ram, value as u16 * 0x100);
+        }
+        else if address == 0x4015 {
         }
         else if address == 0x4016 {
             self.controller.write_mem(address, value);
         }
+        else if address < 0x8000 {
+        }
         else {
-            match self.rom.as_ref().unwrap().mapper {
-                Mapper::NROM => {
-                    self.memory[address as usize] = value;
-                }
-                Mapper::CNROM => {
-                    if address >= 0x8000 {
-                        let base = value as usize * 0x2000;
-                        self.ppu.load_chr_rom(&self.rom.as_ref().
-                                              unwrap().chr_rom[base .. base + 0x2000]);
-                    }
-                    else {
-                        self.memory[address as usize] = value;
-                    }
-                }
-            }
+            self.cartridge.as_ref().unwrap().write_mem_cpu(address, value);
         }
     }
+}
+
+#[derive(Debug,PartialEq)]
+enum MirroringType {
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Debug)]
@@ -167,6 +164,7 @@ pub struct NesRom {
     header: [u8; 16],
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
+    mirroring: MirroringType,
     mapper: Mapper,
 }
 
@@ -184,6 +182,12 @@ pub fn read_nes_file(path: &str) -> NesRom {
     let prg_rom_size_16kb_units = data[4];
     let chr_rom_size_8kb_units = data[5];
     let _flags6 = data[6];
+    let mirroring = if data[6] & 0x01 != 0 {
+        MirroringType::Vertical
+    }
+    else {
+        MirroringType::Horizontal
+    };
     let _has_trainer = data[6] & (1 << 2) == (1 << 2);
     let _has_play_choice_rom = data[7] & (1 << 2) == (1 << 2);
     let _prg_ram_size_8kb_units = data[8];
@@ -204,5 +208,6 @@ pub fn read_nes_file(path: &str) -> NesRom {
     NesRom { header: header,
              prg_rom: prg_rom,
              chr_rom: chr_rom,
+             mirroring: mirroring,
              mapper: mapper}
 }

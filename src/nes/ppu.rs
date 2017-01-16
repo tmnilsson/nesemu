@@ -1,5 +1,7 @@
 extern crate sdl2;
 
+use nes::cartridge;
+
 use sdl2::render::Renderer;
 use sdl2::pixels::Color;
 use sdl2::rect::Point;
@@ -27,7 +29,8 @@ pub struct Ppu<'a> {
     sprites_leftmost_enabled: bool,
     background_enabled: bool,
     sprites_enabled: bool,
-    pub memory: Vec<u8>,
+    vram: [u8; 2048],
+    palette_ram: [u8; 32],
     oam: [u8; 256],
     secondary_oam: [u8; 32],
     oam_addr: u8,
@@ -75,7 +78,8 @@ impl<'a> Ppu<'a> {
             sprites_leftmost_enabled: true,
             background_enabled: true,
             sprites_enabled: true,
-            memory: vec![0; 0x10000],
+            vram: [0; 0x800],
+            palette_ram: [0; 32],
             oam: [0; 256],
             secondary_oam: [0xFF; 32],
             oam_addr: 0,
@@ -110,17 +114,8 @@ impl<'a> Ppu<'a> {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.renderer.set_draw_color(Color::RGB(0, 0, 0));
-        self.renderer.clear();
-    }
-
-    pub fn present(&mut self) {
+    pub fn present(&mut self, cartridge: &cartridge::Cartridge) {
         self.renderer.present();
-    }
-
-    pub fn load_chr_rom(&mut self, chr_rom: &[u8]) {
-        self.memory[0x0000..0x2000].clone_from_slice(&chr_rom);
     }
 
     #[cfg(test)]
@@ -146,7 +141,8 @@ impl<'a> Ppu<'a> {
                 (bg_pattern_upper << 1) | (bg_pattern_lower << 0);
     }
 
-    fn get_sprite_pixel(&self) -> (u8, SpritePriority, bool) {
+    fn get_sprite_pixel(&self, cartridge: &mut cartridge::Cartridge)
+                        -> (u8, SpritePriority, bool) {
         if self.sprites_enabled && (self.cycle_count >= 8 || self.sprites_leftmost_enabled) {
             let x = self.cycle_count;
             let y = self.scan_line;
@@ -179,8 +175,16 @@ impl<'a> Ppu<'a> {
                         self.sprite_pattern_table_addr | (tile_index << 4) | tile_y;
                     let pattern_address_upper = pattern_address_lower | 0x0008;
 
-                    let bitmap_row_lower = self.read_mem_ppu(pattern_address_lower);
-                    let bitmap_row_upper = self.read_mem_ppu(pattern_address_upper);
+                    if pattern_address_lower > 0x4000 {
+                        println!("spta {:04X}, ti {}, ty {} sy {}, y {}",
+                                 self.sprite_pattern_table_addr, tile_index, tile_y,
+                                 sprite_y, y);
+                    }
+
+                    let bitmap_row_lower =
+                        self.read_mem_ppu(pattern_address_lower, cartridge);
+                    let bitmap_row_upper =
+                        self.read_mem_ppu(pattern_address_upper, cartridge);
 
                     let pattern_bit_lower = bitmap_row_lower & (0x80 >> tile_x) != 0;
                     let pattern_bit_upper = bitmap_row_upper & (0x80 >> tile_x) != 0;
@@ -198,9 +202,9 @@ impl<'a> Ppu<'a> {
         return (0, SpritePriority::Back, false);
     }
 
-    fn draw_pixel(&mut self) {
+    fn draw_pixel(&mut self, cartridge: &mut cartridge::Cartridge) {
         let background_index = self.get_background_pixel();
-        let (sprite_index, prio, sprite0) = self.get_sprite_pixel();
+        let (sprite_index, prio, sprite0) = self.get_sprite_pixel(cartridge);
         let index = if sprite_index & 0x3 != 0 && background_index & 0x3 != 0 {
             if sprite0 {
                 self.sprite0_hit = true;
@@ -220,7 +224,7 @@ impl<'a> Ppu<'a> {
         };
 
         let palette_address = 0x3F00 + (index as u16);
-        let color_index = self.read_mem_ppu(palette_address) as usize;
+        let color_index = self.read_mem_ppu(palette_address, cartridge) as usize;
         let red = self.colors[color_index * 3 + 0];
         let green = self.colors[color_index * 3 + 1];
         let blue = self.colors[color_index * 3 + 2];
@@ -231,17 +235,19 @@ impl<'a> Ppu<'a> {
         self.renderer.draw_point(Point::new(x, y)).unwrap();
     }
 
-    fn load_bg_tile(&mut self) {
+    fn load_bg_tile(&mut self, cartridge: &mut cartridge::Cartridge) {
         // pattern
         let tile_address = 0x2000 | (self.reg.v & 0x0FFF);
-        let tile = self.read_mem_ppu(tile_address) as u16;
+        let tile = self.read_mem_ppu(tile_address, cartridge) as u16;
 
         let fine_y = self.reg.v >> 12;
         let pattern_address_lower = self.bg_pattern_table_addr | (tile << 4) | fine_y;
         let pattern_address_upper = pattern_address_lower + 8;
 
-        let bitmap_row_lower = self.read_mem_ppu(pattern_address_lower) as u16;
-        let bitmap_row_upper = self.read_mem_ppu(pattern_address_upper) as u16;
+        let bitmap_row_lower =
+            self.read_mem_ppu(pattern_address_lower, cartridge) as u16;
+        let bitmap_row_upper =
+            self.read_mem_ppu(pattern_address_upper, cartridge) as u16;
 
         self.reg.bg_pattern_lower |= bitmap_row_lower;
         self.reg.bg_pattern_upper |= bitmap_row_upper;
@@ -249,7 +255,7 @@ impl<'a> Ppu<'a> {
         // attribute
         let attribute_address = 0x23C0 | (self.reg.v & 0x0C00)
             | ((self.reg.v >> 4) & 0x38) | ((self.reg.v >> 2) & 0x07);
-        let attribute = self.read_mem_ppu(attribute_address);
+        let attribute = self.read_mem_ppu(attribute_address, cartridge);
 
         let attr_x = self.reg.v & 0x0002 != 0;
         let attr_y = self.reg.v & 0x0040 != 0;
@@ -270,7 +276,7 @@ impl<'a> Ppu<'a> {
         self.reg.bg_attribute_latch = palette_bits;
     }
 
-    pub fn step_cycle(&mut self, count: u16) -> bool {
+    pub fn step_cycle(&mut self, count: u16, cartridge: &mut cartridge::Cartridge) -> bool {
         for _ in 0..count*3 {
             if self.background_enabled || self.sprites_enabled {
                 if self.scan_line == -1 {
@@ -312,7 +318,7 @@ impl<'a> Ppu<'a> {
                             if self.scan_line == -1 && self.cycle_count >= 328 ||
                                 self.scan_line >= 0 && self.scan_line < 240 {
 
-                                self.load_bg_tile();
+                                self.load_bg_tile(cartridge);
 
                                 // increase x
                                 if self.reg.v & 0x001F == 31 {
@@ -327,7 +333,7 @@ impl<'a> Ppu<'a> {
                     }
                 }
                 if self.scan_line >= 0 && self.scan_line < 240 && self.cycle_count < 256 {
-                    self.draw_pixel();
+                    self.draw_pixel(cartridge);
                 }
                 if self.cycle_count < 336 {
                     self.reg.bg_pattern_lower <<= 1;
@@ -348,7 +354,7 @@ impl<'a> Ppu<'a> {
             self.cycle_count += 1;
             if self.cycle_count >= 341 {
                 self.cycle_count -= 341;
-                if self.scan_line >= 0 && self.scan_line < 240 {
+                if self.scan_line < 240 {
                     self.prepare_sprites();
                 }
                 self.scan_line += 1;
@@ -371,6 +377,9 @@ impl<'a> Ppu<'a> {
         for i in 0..32 {
             self.secondary_oam[i] = 0xFF;
         }
+        if self.scan_line == -1 {
+            return;
+        }
         self.sprite0_enabled = false;
         let mut offset = 0;
         let mut offset_2nd = 0;
@@ -388,7 +397,7 @@ impl<'a> Ppu<'a> {
         }
     }
 
-    pub fn read_mem(&mut self, cpu_address: u16) -> u8 {
+    pub fn read_mem(&mut self, cartridge: &mut cartridge::Cartridge, cpu_address: u16) -> u8 {
         match cpu_address {
             0x2000 | 0x2001 | 0x2003 | 0x2005 | 0x2006 => { // Write-only registers, return 0
                 0
@@ -412,7 +421,7 @@ impl<'a> Ppu<'a> {
             }
             0x2007 => {
                 let addr = self.reg.v;
-                let value = self.read_mem_ppu(addr);
+                let value = self.read_mem_ppu(addr, cartridge);
                 self.reg.v += self.vram_addr_increment;
                 value
             }
@@ -420,7 +429,8 @@ impl<'a> Ppu<'a> {
         }
     }
 
-    pub fn write_mem(&mut self, cpu_address: u16, value: u8) {
+    pub fn write_mem(&mut self, cpu_address: u16, value: u8,
+                     cartridge: &mut cartridge::Cartridge) {
         match cpu_address {
             0x2000 => {
                 self.vram_addr_increment = if (value & 0x04) == 0 { 1 } else { 32 };
@@ -472,24 +482,55 @@ impl<'a> Ppu<'a> {
             }
             0x2007 => {
                 let addr = self.reg.v;
-                self.write_mem_ppu(addr, value);
+                self.write_mem_ppu(addr, value, cartridge);
                 self.reg.v += self.vram_addr_increment;
             }
             _ => panic!("Unimplemented write address: {:04X}", cpu_address)
         }
     }
 
-    pub fn perform_dma(&mut self, memory: &[u8], start_addr: u16) {
+    pub fn perform_dma(&mut self, cartridge: &mut cartridge::Cartridge,
+                       memory: &[u8], start_addr: u16) {
         let end_addr = start_addr + 256;
         self.oam.clone_from_slice(&memory[start_addr as usize .. end_addr as usize]);
-        self.step_cycle(513);
+        self.step_cycle(513, cartridge);
     }
 
-    fn read_mem_ppu(&self, ppu_address: u16) -> u8 {
-        self.memory[ppu_address as usize]
+    fn read_mem_ppu(&self, ppu_address: u16, cartridge: &cartridge::Cartridge) -> u8 {
+        if ppu_address < 0x3F00 {
+            cartridge.read_mem_ppu(ppu_address, &self.vram)
+        }
+        else if ppu_address < 0x4000 {
+            let palette_address = ppu_address & 0xFF1F;
+            let palette_address = if (palette_address & 0xFFF3) == 0x3F10 {
+                (palette_address - 0x10) - 0x3F00
+            }
+            else {
+                palette_address - 0x3F00
+            };
+            self.palette_ram[palette_address as usize]
+        }
+        else {
+            panic!("unexpected address: {:04X}", ppu_address);
+        }
     }
 
-    fn write_mem_ppu(&mut self, ppu_address: u16, value: u8) {
-        self.memory[ppu_address as usize] = value;
+    fn write_mem_ppu(&mut self, ppu_address: u16, value: u8, cartridge: &cartridge::Cartridge) {
+        if ppu_address < 0x3F00 {
+            cartridge.write_mem_ppu(ppu_address, value, &mut self.vram);
+        }
+        else if ppu_address < 0x4000 {
+            let palette_address = ppu_address & 0xFF1F;
+            let palette_address = if (palette_address & 0xFFF3) == 0x3F10 {
+                (palette_address - 0x10) - 0x3F00
+            }
+            else {
+                palette_address - 0x3F00
+            };
+            self.palette_ram[palette_address as usize] = value;
+        }
+        else {
+            //panic!("unexpected address: {:04X}", ppu_address);
+        }
     }
 }

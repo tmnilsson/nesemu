@@ -74,7 +74,6 @@ fn main()
         if quit {
             break 'running;
         }
-        machine.clear();
         cpu.execute_until_nmi(&mut machine);
         machine.present();
         let now = PreciseTime::now();
