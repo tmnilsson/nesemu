@@ -41,6 +41,7 @@ pub struct Ppu<'a> {
     sprite0_enabled: bool,
     sprite0_hit: bool,
     renderer: Renderer<'a>,
+    renderer_nt: Option<Renderer<'a>>,
     colors: Vec<u8>,
 }
 
@@ -57,7 +58,7 @@ fn copy_bits(dest: u16, src: u16, mask: u16) -> u16 {
 
 
 impl<'a> Ppu<'a> {
-    pub fn new(sdl_context: &mut sdl2::Sdl) -> Ppu<'a> {
+    pub fn new(sdl_context: &mut sdl2::Sdl, show_name_table: bool) -> Ppu<'a> {
         let video_subsystem = sdl_context.video().unwrap();
 
         let window = video_subsystem.window("nesemu", 256, 240)
@@ -66,6 +67,17 @@ impl<'a> Ppu<'a> {
             .unwrap();
 
         let renderer = window.renderer().build().unwrap();
+
+        let renderer_nt = if show_name_table {
+            let window_nt = video_subsystem.window("nametable", 512, 480)
+                .position_centered()
+                .build()
+                .unwrap();
+            Some(window_nt.renderer().build().unwrap())
+        }
+        else {
+            None
+        };
 
         Ppu {
             scan_line: 0,
@@ -93,6 +105,7 @@ impl<'a> Ppu<'a> {
             sprite0_enabled: false,
             sprite0_hit: false,
             renderer: renderer,
+            renderer_nt: renderer_nt,
             colors: vec![
                 84, 84, 84,     0, 30, 116,     8, 16, 144,     48, 0, 136,
                 68, 0, 100,     92, 0, 48,      84, 4, 0,       60, 24, 0,
@@ -114,8 +127,87 @@ impl<'a> Ppu<'a> {
         }
     }
 
+    fn render_name_table(&mut self, cartridge: &cartridge::Cartridge) {
+        for nt_y in 0..2 {
+            for nt_x in 0..2 {
+                let base_address = 0x2000 + 0x400 * (nt_y * 2 + nt_x);
+                for tile_y in 0..30 {
+                    for tile_x in 0..32 {
+                        let tile = self.read_mem_ppu(
+                            base_address + tile_y * 32 + tile_x,
+                            cartridge) as u16;
+
+                        let attribute = self.read_mem_ppu(
+                            base_address + 0x3C0 + (tile_y >> 2) * 8 + (tile_x >> 2),
+                            cartridge);
+
+                        let attr_x = tile_x & 0x0001 != 0;
+                        let attr_y = tile_y & 0x0001 != 0;
+
+                        let palette_bits = if !attr_x && !attr_y {
+                            attribute & 0x3
+                        }
+                        else if attr_x && !attr_y {
+                            (attribute >> 2) & 0x3
+                        }
+                        else if !attr_x && attr_y {
+                            (attribute >> 4) & 0x3
+                        }
+                        else {
+                            (attribute >> 6) & 0x3
+                        };
+
+                        for pattern_y in 0..8 {
+                            let pattern_address_lower =
+                                self.bg_pattern_table_addr | (tile << 4) | pattern_y;
+                            let pattern_address_upper = pattern_address_lower + 8;
+
+                            let bitmap_row_lower =
+                                self.read_mem_ppu(pattern_address_lower, cartridge) as u16;
+                            let bitmap_row_upper =
+                                self.read_mem_ppu(pattern_address_upper, cartridge) as u16;
+
+                            for pattern_x in 0..8 {
+                                let screen_y = nt_y * 240 + tile_y * 8 + pattern_y;
+                                let screen_x = nt_x * 256 + tile_x * 8 + pattern_x;
+
+                                let bg_pattern_upper =
+                                    if bitmap_row_upper &
+                                    (0x80 >> pattern_x) != 0 { 1 } else { 0 };
+                                let bg_pattern_lower =
+                                    if bitmap_row_lower &
+                                    (0x80 >> pattern_x) != 0 { 1 } else { 0 };
+
+                                let index = (palette_bits << 2) |
+                                    (bg_pattern_upper << 1) | (bg_pattern_lower << 0);
+                                let palette_address = 0x3F00 + (index as u16);
+                                let color_index =
+                                    self.read_mem_ppu(palette_address, cartridge) as usize;
+                                let red = self.colors[color_index * 3 + 0];
+                                let green = self.colors[color_index * 3 + 1];
+                                let blue = self.colors[color_index * 3 + 2];
+                                let mut renderer = self.renderer_nt.as_mut().unwrap();
+                                renderer.set_draw_color(Color::RGB(red, green, blue));
+                                renderer.draw_point(
+                                    Point::new(screen_x as i32, screen_y as i32)).unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn present(&mut self, cartridge: &cartridge::Cartridge) {
         self.renderer.present();
+        match self.renderer_nt {
+            Some(_) => {
+                self.render_name_table(cartridge);
+                self.renderer_nt.as_mut().unwrap().present();
+            }
+            None => {
+            }
+        }
     }
 
     #[cfg(test)]

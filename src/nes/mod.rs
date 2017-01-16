@@ -34,12 +34,12 @@ pub fn get_state_string(cpu: &cpu::Cpu, machine: &mut Machine) -> String {
 
 
 impl<'a> Machine<'a> {
-    pub fn new() -> Self {
+    pub fn new(show_name_table: bool) -> Self {
         let mut sdl_context = sdl2::init().unwrap();
 
         let ram = vec![0; 0x800];
         Machine {
-            ppu: ppu::Ppu::new(&mut sdl_context),
+            ppu: ppu::Ppu::new(&mut sdl_context, show_name_table),
             controller: controller::Controller::new(),
             ram: ram,
             nmi_line: true,

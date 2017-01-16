@@ -18,7 +18,7 @@ use std::io::BufReader;
 // Needs nestest.nes and nestest.log from wiki.nesdev.com in same directory
 #[cfg(test)]
 fn test_nestest_rom(verbose: bool) {
-    let mut machine = nes::Machine::new();
+    let mut machine = nes::Machine::new(false);
     let mut cpu = nes::cpu::Cpu::new();
     let rom = nes::read_nes_file("nestest.nes");
     machine.load_rom(rom);
@@ -61,7 +61,7 @@ fn nestest_rom() {
 
 fn main()
 {
-    let mut machine = nes::Machine::new();
+    let mut machine = nes::Machine::new(false);
     let mut cpu = nes::cpu::Cpu::new();
     let args: Vec<_> = env::args().collect();
     let rom = nes::read_nes_file(&args[1]);
