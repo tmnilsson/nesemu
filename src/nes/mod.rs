@@ -1,15 +1,12 @@
 extern crate sdl2;
 
-mod ppu;
 pub mod cpu;
+pub mod cartridge;
+mod ppu;
 mod controller;
-mod cartridge;
 
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
-
-use std::fs::File;
-use std::io::Read;
 
 
 pub struct Machine<'a> {
@@ -19,12 +16,6 @@ pub struct Machine<'a> {
     nmi_line: bool,
     sdl_context: sdl2::Sdl,
     cartridge: Option<cartridge::Cartridge>,
-}
-
-#[derive(Debug,Clone,Copy)]
-enum Mapper {
-    NROM,
-    CNROM,
 }
 
 #[allow(dead_code)]
@@ -53,7 +44,7 @@ impl<'a> Machine<'a> {
         self.ppu.present(cartridge);
     }
 
-    pub fn load_rom(&mut self, rom: NesRom) {
+    pub fn load_rom(&mut self, rom: cartridge::NesRomFile) {
         self.cartridge = Some(cartridge::Cartridge::new(rom));
     }
 
@@ -64,9 +55,6 @@ impl<'a> Machine<'a> {
                 Event::Quit {..} | Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
                     return true;
                 },
-                Event::KeyDown { keycode: Some(Keycode::Space), .. } => {
-                    println!("Space");
-                }
                 Event::KeyDown { keycode: Some(c), .. } => {
                     self.controller.handle_key_down(c);
                 }
@@ -109,8 +97,7 @@ impl<'a> Machine<'a> {
             self.ppu.read_mem(cartridge, reg_address)
         }
         else if address < 0x4016 {
-            //panic!("apu address {:04X} not implemented", address);
-            0xFF
+            0xFF // TODO: implement APU
         }
         else if address < 0x4018 {
             self.controller.read_mem(address)
@@ -151,63 +138,4 @@ impl<'a> Machine<'a> {
             self.cartridge.as_ref().unwrap().write_mem_cpu(address, value);
         }
     }
-}
-
-#[derive(Debug,PartialEq)]
-enum MirroringType {
-    Horizontal,
-    Vertical,
-}
-
-#[derive(Debug)]
-pub struct NesRom {
-    header: [u8; 16],
-    prg_rom: Vec<u8>,
-    chr_rom: Vec<u8>,
-    mirroring: MirroringType,
-    mapper: Mapper,
-}
-
-pub fn read_nes_file(path: &str) -> NesRom {
-    let mut data = Vec::new();
-    let mut f = File::open(path).expect("Unable to open file");
-    f.read_to_end(&mut data).expect("Unable to read data");
-
-    let mut header = [0; 16];
-    header.clone_from_slice(&data[0..16]);
-    let magic = "NES\x1a".as_bytes();
-    if &data[0..4] != magic {
-        panic!("Not a NES file");
-    }
-    let prg_rom_size_16kb_units = data[4];
-    let chr_rom_size_8kb_units = data[5];
-    let _flags6 = data[6];
-    let mirroring = if data[6] & 0x01 != 0 {
-        MirroringType::Vertical
-    }
-    else {
-        MirroringType::Horizontal
-    };
-    let _has_trainer = data[6] & (1 << 2) == (1 << 2);
-    let _has_play_choice_rom = data[7] & (1 << 2) == (1 << 2);
-    let _prg_ram_size_8kb_units = data[8];
-    let mapper_u8 = data[7] & 0xF0 | ((_flags6 & 0xF0) >> 4);
-    let mapper = match mapper_u8 {
-        0 => Mapper::NROM,
-        3 => Mapper::CNROM,
-        _ => { panic!("unsupported mapper: {}", mapper_u8); }
-    };
-
-    let prg_size = prg_rom_size_16kb_units as usize * 16384;
-    let chr_size = chr_rom_size_8kb_units as usize * 8192;
-    let mut prg_rom = vec![0; prg_size];
-    prg_rom.clone_from_slice(&data[16 .. 16 + prg_size]);
-    let mut chr_rom = vec![0; chr_size];
-    chr_rom.clone_from_slice(&data[16 + prg_size .. 16 + prg_size + chr_size]);
-
-    NesRom { header: header,
-             prg_rom: prg_rom,
-             chr_rom: chr_rom,
-             mirroring: mirroring,
-             mapper: mapper}
 }

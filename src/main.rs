@@ -20,7 +20,7 @@ use std::io::BufReader;
 fn test_nestest_rom(verbose: bool) {
     let mut machine = nes::Machine::new(false);
     let mut cpu = nes::cpu::Cpu::new();
-    let rom = nes::read_nes_file("nestest.nes");
+    let rom = nes::cartridge::read_nes_file("nestest.nes");
     machine.load_rom(rom);
     cpu.reset(&mut machine);
     cpu.set_program_counter(0xc000);
@@ -64,7 +64,7 @@ fn main()
     let mut machine = nes::Machine::new(false);
     let mut cpu = nes::cpu::Cpu::new();
     let args: Vec<_> = env::args().collect();
-    let rom = nes::read_nes_file(&args[1]);
+    let rom = nes::cartridge::read_nes_file(&args[1]);
     machine.load_rom(rom);
     cpu.reset(&mut machine);
 

@@ -41,7 +41,7 @@ pub struct Ppu<'a> {
     sprite0_enabled: bool,
     sprite0_hit: bool,
     renderer: Renderer<'a>,
-    renderer_nt: Option<Renderer<'a>>,
+    renderer_nametable: Option<Renderer<'a>>,
     colors: Vec<u8>,
 }
 
@@ -56,7 +56,6 @@ fn copy_bits(dest: u16, src: u16, mask: u16) -> u16 {
     return tmp | (src & mask);
 }
 
-
 impl<'a> Ppu<'a> {
     pub fn new(sdl_context: &mut sdl2::Sdl, show_name_table: bool) -> Ppu<'a> {
         let video_subsystem = sdl_context.video().unwrap();
@@ -68,12 +67,12 @@ impl<'a> Ppu<'a> {
 
         let renderer = window.renderer().build().unwrap();
 
-        let renderer_nt = if show_name_table {
-            let window_nt = video_subsystem.window("nametable", 512, 480)
+        let renderer_nametable = if show_name_table {
+            let window = video_subsystem.window("nametable", 512, 480)
                 .position_centered()
                 .build()
                 .unwrap();
-            Some(window_nt.renderer().build().unwrap())
+            Some(window.renderer().build().unwrap())
         }
         else {
             None
@@ -105,7 +104,7 @@ impl<'a> Ppu<'a> {
             sprite0_enabled: false,
             sprite0_hit: false,
             renderer: renderer,
-            renderer_nt: renderer_nt,
+            renderer_nametable: renderer_nametable,
             colors: vec![
                 84, 84, 84,     0, 30, 116,     8, 16, 144,     48, 0, 136,
                 68, 0, 100,     92, 0, 48,      84, 4, 0,       60, 24, 0,
@@ -186,7 +185,7 @@ impl<'a> Ppu<'a> {
                                 let red = self.colors[color_index * 3 + 0];
                                 let green = self.colors[color_index * 3 + 1];
                                 let blue = self.colors[color_index * 3 + 2];
-                                let mut renderer = self.renderer_nt.as_mut().unwrap();
+                                let mut renderer = self.renderer_nametable.as_mut().unwrap();
                                 renderer.set_draw_color(Color::RGB(red, green, blue));
                                 renderer.draw_point(
                                     Point::new(screen_x as i32, screen_y as i32)).unwrap();
@@ -200,10 +199,10 @@ impl<'a> Ppu<'a> {
 
     pub fn present(&mut self, cartridge: &cartridge::Cartridge) {
         self.renderer.present();
-        match self.renderer_nt {
+        match self.renderer_nametable {
             Some(_) => {
                 self.render_name_table(cartridge);
-                self.renderer_nt.as_mut().unwrap().present();
+                self.renderer_nametable.as_mut().unwrap().present();
             }
             None => {
             }
@@ -317,13 +316,14 @@ impl<'a> Ppu<'a> {
 
         let palette_address = 0x3F00 + (index as u16);
         let color_index = self.read_mem_ppu(palette_address, cartridge) as usize;
+
         let red = self.colors[color_index * 3 + 0];
         let green = self.colors[color_index * 3 + 1];
         let blue = self.colors[color_index * 3 + 2];
         self.renderer.set_draw_color(Color::RGB(red, green, blue));
+
         let x = self.cycle_count as i32;
         let y = self.scan_line as i32;
-
         self.renderer.draw_point(Point::new(x, y)).unwrap();
     }
 
@@ -368,6 +368,37 @@ impl<'a> Ppu<'a> {
         self.reg.bg_attribute_latch = palette_bits;
     }
 
+    fn increment_v_vertical(&mut self) {
+        if self.reg.v & 0x7000 != 0x7000 {
+            self.reg.v += 0x1000;
+        }
+        else {
+            self.reg.v &= !0x7000;
+            let mut y = (self.reg.v & 0x03E0) >> 5;
+            if y == 29 {
+                y = 0;
+                self.reg.v ^= 0x0800;
+            }
+            else if y == 31 {
+                y = 0;
+            }
+            else {
+                y += 1;
+            }
+            self.reg.v = (self.reg.v & !0x03E0) | (y << 5);
+        }
+    }
+
+    fn increment_v_horizontal(&mut self) {
+        if self.reg.v & 0x001F == 31 {
+            self.reg.v &= !0x001F;
+            self.reg.v ^= 0x0400;
+        }
+        else {
+            self.reg.v += 1;
+        }
+    }
+
     pub fn step_cycle(&mut self, count: u16, cartridge: &mut cartridge::Cartridge) -> bool {
         for _ in 0..count*3 {
             if self.background_enabled || self.sprites_enabled {
@@ -379,47 +410,19 @@ impl<'a> Ppu<'a> {
                 }
                 else if self.scan_line < 240 {
                     if self.cycle_count == 256 {
-                        // increase y
-                        if self.reg.v & 0x7000 != 0x7000 {
-                            self.reg.v += 0x1000;
-                        }
-                        else {
-                            self.reg.v &= !0x7000;
-                            let mut y = (self.reg.v & 0x03E0) >> 5;
-                            if y == 29 {
-                                y = 0;
-                                self.reg.v ^= 0x0800;
-                            }
-                            else if y == 31 {
-                                y = 0;
-                            }
-                            else {
-                                y += 1;
-                            }
-                            self.reg.v = (self.reg.v & !0x03E0) | (y << 5);
-                        }
+                        self.increment_v_vertical();
                     }
                     else if self.cycle_count == 257 {
                         // copy horizontal bits
                         self.reg.v = copy_bits(self.reg.v, self.reg.t, 0x041F);
                     }
                     if (self.cycle_count > 0 && self.cycle_count <= 256) ||
-                        (self.cycle_count == 328 || self.cycle_count == 336) {
+                            (self.cycle_count == 328 || self.cycle_count == 336) {
                         if self.cycle_count % 8 == 0 {
-
                             if self.scan_line == -1 && self.cycle_count >= 328 ||
-                                self.scan_line >= 0 && self.scan_line < 240 {
-
+                                    self.scan_line >= 0 && self.scan_line < 240 {
                                 self.load_bg_tile(cartridge);
-
-                                // increase x
-                                if self.reg.v & 0x001F == 31 {
-                                    self.reg.v &= !0x001F;
-                                    self.reg.v ^= 0x0400;
-                                }
-                                else {
-                                    self.reg.v += 1;
-                                }
+                                self.increment_v_horizontal();
                             }
                         }
                     }
@@ -532,7 +535,7 @@ impl<'a> Ppu<'a> {
                 self.sprite_pattern_table_addr = if value & 0x08 != 0 { 0x1000 } else { 0 };
                 self.sprite_height = if value & 0x20 != 0 { 16 } else { 8 };
                 if self.sprite_height != 8 {
-                    panic!("too high");
+                    unimplemented!();
                 }
             }
             0x2001 => {
