@@ -135,7 +135,7 @@ impl<'a> Machine<'a> {
         else if address < 0x8000 {
         }
         else {
-            self.cartridge.as_ref().unwrap().write_mem_cpu(address, value);
+            self.cartridge.as_mut().unwrap().write_mem_cpu(address, value);
         }
     }
 }
