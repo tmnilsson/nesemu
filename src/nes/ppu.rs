@@ -515,10 +515,15 @@ impl<'a> Ppu<'a> {
                 }
             }
             0x2007 => {
-                let addr = self.reg.v;
-                let value = self.read_mem_ppu(addr, cartridge);
-                self.reg.v += self.vram_addr_increment;
-                value
+                if self.mem_read_mut_enabled {
+                    let addr = self.reg.v;
+                    let value = self.read_mem_ppu(addr, cartridge);
+                    self.reg.v += self.vram_addr_increment;
+                    value
+                }
+                else {
+                    0
+                }
             }
             _ => panic!("Unimplemented read address: {:04X}", cpu_address)
         }
@@ -610,7 +615,8 @@ impl<'a> Ppu<'a> {
         }
     }
 
-    fn write_mem_ppu(&mut self, ppu_address: u16, value: u8, cartridge: &cartridge::Cartridge) {
+    fn write_mem_ppu(&mut self, ppu_address: u16, value: u8,
+                     cartridge: &mut cartridge::Cartridge) {
         if ppu_address < 0x3F00 {
             cartridge.write_mem_ppu(ppu_address, value, &mut self.vram);
         }

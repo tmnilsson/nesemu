@@ -102,7 +102,7 @@ impl<'a> Machine<'a> {
         else if address < 0x4018 {
             self.controller.read_mem(address)
         }
-        else if address < 0x8000 {
+        else if address < 0x4020 {
             0xFF
         }
         else {
@@ -132,7 +132,7 @@ impl<'a> Machine<'a> {
         else if address == 0x4016 {
             self.controller.write_mem(address, value);
         }
-        else if address < 0x8000 {
+        else if address < 0x4020 {
         }
         else {
             self.cartridge.as_mut().unwrap().write_mem_cpu(address, value);
