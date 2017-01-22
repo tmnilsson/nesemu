@@ -10,18 +10,17 @@ mod nes;
 use std::fs::File;
 
 #[cfg(test)]
-use std::io::BufRead;
+use std::io::{BufRead, BufReader};
 
-#[cfg(test)]
-use std::io::BufReader;
+use std::path::Path;
 
 // Needs nestest.nes and nestest.log from wiki.nesdev.com in same directory
 #[cfg(test)]
 fn test_nestest_rom(verbose: bool) {
     let mut machine = nes::Machine::new(false);
     let mut cpu = nes::cpu::Cpu::new();
-    let rom = nes::cartridge::read_nes_file("nestest.nes");
-    machine.load_rom(rom);
+    let cartridge = nes::cartridge::Cartridge::load(Path::new("nestest.nes"));
+    machine.load_cartridge(cartridge);
     cpu.reset(&mut machine);
     cpu.set_program_counter(0xc000);
     machine.set_scan_line(241);
@@ -64,8 +63,8 @@ fn main()
     let mut machine = nes::Machine::new(false);
     let mut cpu = nes::cpu::Cpu::new();
     let args: Vec<_> = env::args().collect();
-    let rom = nes::cartridge::read_nes_file(&args[1]);
-    machine.load_rom(rom);
+    let cartridge = nes::cartridge::Cartridge::load(Path::new(&args[1]));
+    machine.load_cartridge(cartridge);
     cpu.reset(&mut machine);
 
     let mut prev_time = PreciseTime::now();
@@ -83,4 +82,6 @@ fn main()
         }
         prev_time = PreciseTime::now();
     }
+
+    machine.save();
 }

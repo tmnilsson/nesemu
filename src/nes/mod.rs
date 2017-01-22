@@ -44,8 +44,15 @@ impl<'a> Machine<'a> {
         self.ppu.present(cartridge);
     }
 
-    pub fn load_rom(&mut self, rom: cartridge::NesRomFile) {
-        self.cartridge = Some(cartridge::Cartridge::new(rom));
+    pub fn load_cartridge(&mut self, cartridge: cartridge::Cartridge) {
+        self.cartridge = Some(cartridge);
+    }
+
+    pub fn save(&self) {
+        match self.cartridge.as_ref() {
+            Some(c) => c.save(),
+            None => {}
+        }
     }
 
     pub fn handle_events(&mut self) -> bool {

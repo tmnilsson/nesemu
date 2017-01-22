@@ -1,5 +1,6 @@
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
 
 #[derive(Debug,PartialEq,Clone,Copy)]
@@ -30,7 +31,7 @@ enum Mapper {
 }
 
 #[derive(Debug)]
-pub struct NesRomFile {
+struct NesRomFile {
     header: [u8; 16],
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
@@ -40,78 +41,114 @@ pub struct NesRomFile {
     mapper_id: u8,
 }
 
-pub fn read_nes_file(path: &str) -> NesRomFile {
-    let mut data = Vec::new();
-    let mut f = File::open(path).expect("Unable to open file");
-    f.read_to_end(&mut data).expect("Unable to read data");
-
-    let mut header = [0; 16];
-    header.clone_from_slice(&data[0..16]);
-    let magic = "NES\x1a".as_bytes();
-    if &data[0..4] != magic {
-        panic!("Not a NES file");
-    }
-    let prg_rom_size_16kb_units = data[4];
-    let chr_rom_size_8kb_units = data[5];
-    let _flags6 = data[6];
-    let mirroring = if data[6] & 0x01 != 0 {
-        MirroringType::Vertical
-    }
-    else {
-        MirroringType::Horizontal
-    };
-    let has_persistent_ram = data[6] & 0x2 != 0;
-    let _has_play_choice_rom = data[7] & (1 << 2) == (1 << 2);
-    let _prg_ram_size_8kb_units = data[8];
-    let mapper_id = data[7] & 0xF0 | ((_flags6 & 0xF0) >> 4);
-
-    let prg_size = prg_rom_size_16kb_units as usize * 16384;
-    let chr_size = chr_rom_size_8kb_units as usize * 8192;
-    let mut prg_rom = vec![0; prg_size];
-    prg_rom.clone_from_slice(&data[16 .. 16 + prg_size]);
-    let mut chr_rom = vec![0; chr_size];
-    chr_rom.clone_from_slice(&data[16 + prg_size .. 16 + prg_size + chr_size]);
-
-    NesRomFile { header: header,
-                 prg_rom: prg_rom,
-                 chr_rom: chr_rom,
-                 mirroring: mirroring,
-                 has_persistent_ram: has_persistent_ram,
-                 has_chr_ram: chr_size == 0,
-                 mapper_id: mapper_id}
-}
-
-
 pub struct Cartridge {
+    nes_path: PathBuf,
     rom: NesRomFile,
     mapper: Mapper,
 }
 
-impl Cartridge {
-    pub fn new(rom: NesRomFile) -> Self {
-        let mapper = match rom.mapper_id {
-            0 => Mapper::NROM,
-            1 => Mapper::MMC1 {
-                shift: 0,
-                shift_count: 0,
-                mirroring: MirroringType::Vertical,
-                prg_swap_range_bit: true,
-                prg_size_bit: true,
-                chr_size_bit: false,
-                chr_bank_0: 0,
-                chr_bank_1: 0,
-                prg_bank: 0,
-                prg_ram: vec![0; 8192],
-                chr_ram: if rom.has_chr_ram { Some(vec![0; 8192]) } else { None },
-            },
-            3 => Mapper::CNROM {
-                bank: 0
-            },
-            _ => { unimplemented!(); },
+impl NesRomFile {
+    fn load(path: &Path) -> Self {
+        let mut data = Vec::new();
+        let mut f = File::open(path).expect("Unable to open file");
+        f.read_to_end(&mut data).expect("Unable to read data");
+
+        let mut header = [0; 16];
+        header.clone_from_slice(&data[0..16]);
+        let magic = "NES\x1a".as_bytes();
+        if &data[0..4] != magic {
+            panic!("Not a NES file");
+        }
+        let prg_rom_size_16kb_units = data[4];
+        let chr_rom_size_8kb_units = data[5];
+        let _flags6 = data[6];
+        let mirroring = if data[6] & 0x01 != 0 {
+            MirroringType::Vertical
+        }
+        else {
+            MirroringType::Horizontal
         };
-        Cartridge {
-            rom: rom,
-            mapper: mapper,
+        let has_persistent_ram = data[6] & 0x2 != 0;
+        let _has_play_choice_rom = data[7] & (1 << 2) == (1 << 2);
+        let _prg_ram_size_8kb_units = data[8];
+        let mapper_id = data[7] & 0xF0 | ((_flags6 & 0xF0) >> 4);
+
+        let prg_size = prg_rom_size_16kb_units as usize * 16384;
+        let chr_size = chr_rom_size_8kb_units as usize * 8192;
+        let mut prg_rom = vec![0; prg_size];
+        prg_rom.clone_from_slice(&data[16 .. 16 + prg_size]);
+        let mut chr_rom = vec![0; chr_size];
+        chr_rom.clone_from_slice(&data[16 + prg_size .. 16 + prg_size + chr_size]);
+
+        NesRomFile { header: header,
+                     prg_rom: prg_rom,
+                     chr_rom: chr_rom,
+                     mirroring: mirroring,
+                     has_persistent_ram: has_persistent_ram,
+                     has_chr_ram: chr_size == 0,
+                     mapper_id: mapper_id}
+    }
+}
+
+impl Cartridge {
+    pub fn load(path: &Path) -> Self {
+        if path.extension().unwrap().to_str().unwrap() == "nes" {
+            let rom = NesRomFile::load(path);
+            let save_path = path.with_extension("sav");
+            let mut save_data = vec![0; 8192];
+            if rom.has_persistent_ram {
+                match File::open(&save_path) {
+                    Ok(mut f) => {
+                        save_data.clear();
+                        f.read_to_end(&mut save_data).expect("Unable to read save data");
+                    }
+                    Err(_) => {
+                    }
+                }
+            }
+
+            let mapper = match rom.mapper_id {
+                0 => Mapper::NROM,
+                1 => Mapper::MMC1 {
+                    shift: 0,
+                    shift_count: 0,
+                    mirroring: MirroringType::Vertical,
+                    prg_swap_range_bit: true,
+                    prg_size_bit: true,
+                    chr_size_bit: false,
+                    chr_bank_0: 0,
+                    chr_bank_1: 0,
+                    prg_bank: 0,
+                    prg_ram: save_data,
+                    chr_ram: if rom.has_chr_ram { Some(vec![0; 8192]) } else { None },
+                },
+                3 => Mapper::CNROM {
+                    bank: 0
+                },
+                _ => { unimplemented!(); },
+            };
+
+            Cartridge {
+                nes_path: path.to_path_buf(),
+                rom: rom,
+                mapper: mapper,
+            }
+        }
+        else {
+            unimplemented!();
+        }
+    }
+
+    pub fn save(&self) {
+        if self.rom.has_persistent_ram {
+            let save_path = self.nes_path.with_extension("sav");
+            match self.mapper {
+                Mapper::MMC1 { ref prg_ram, .. } => {
+                    let mut f = File::create(&save_path).unwrap();
+                    f.write_all(prg_ram).expect("Unable to write save data");
+                }
+                _ => { panic!("persistent ram not supported"); }
+            }
         }
     }
 
