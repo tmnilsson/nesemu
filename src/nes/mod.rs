@@ -18,6 +18,12 @@ pub struct Machine<'a> {
     cartridge: Option<cartridge::Cartridge>,
 }
 
+#[derive(PartialEq)]
+pub enum SystemEvent {
+    Quit,
+    Reset,
+}
+
 #[allow(dead_code)]
 pub fn get_state_string(cpu: &cpu::Cpu, machine: &mut Machine) -> String {
     format!("{} {}", cpu.get_state_string(machine), machine.get_state_string())
@@ -55,15 +61,20 @@ impl<'a> Machine<'a> {
         }
     }
 
-    pub fn handle_events(&mut self) -> bool {
+    pub fn handle_events(&mut self) -> Option<SystemEvent> {
         let mut event_pump = self.sdl_context.event_pump().unwrap();
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit {..} | Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
-                    return true;
+                    return Some(SystemEvent::Quit);
                 },
                 Event::KeyDown { keycode: Some(c), .. } => {
-                    self.controller.handle_key_down(c);
+                    if c == Keycode::R {
+                        return Some(SystemEvent::Reset);
+                    }
+                    else {
+                        self.controller.handle_key_down(c);
+                    }
                 }
                 Event::KeyUp { keycode: Some(c), .. } => {
                     self.controller.handle_key_up(c);
@@ -71,7 +82,7 @@ impl<'a> Machine<'a> {
                 _ => {}
             }
         }
-        false
+        None
     }
 
     #[cfg(test)]

@@ -69,9 +69,14 @@ fn main()
 
     let mut prev_time = PreciseTime::now();
     'running: loop {
-        let quit = machine.handle_events();
-        if quit {
-            break 'running;
+        match machine.handle_events() {
+            Some(ref e) if *e == nes::SystemEvent::Quit => {
+                break 'running;
+            }
+            Some(ref e) if *e == nes::SystemEvent::Reset => {
+                cpu.reset(&mut machine);
+            }
+            None | Some(_) => {}
         }
         cpu.execute_until_nmi(&mut machine);
         machine.present();
