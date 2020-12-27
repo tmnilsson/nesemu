@@ -2,6 +2,7 @@
 name = "nesemu"
 version = "0.0.1"
 authors = ["Tomas Nilsson <tomas.nilsson@gmail.com>"]
+edition = "2018"
 
 [dependencies]
 sdl2 = "0.25"

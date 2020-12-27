@@ -1,6 +1,6 @@
 extern crate sdl2;
 
-use nes::cartridge;
+use crate::nes::cartridge;
 
 use sdl2::render::Renderer;
 use sdl2::pixels::Color;

@@ -1,4 +1,4 @@
-use nes::Machine;
+use crate::nes::Machine;
 use std::collections::HashMap;
 
 #[derive(Debug)]
