@@ -2,7 +2,7 @@ extern crate sdl2;
 
 use crate::nes::cartridge;
 
-use sdl2::render::Renderer;
+use sdl2::render::WindowCanvas;
 use sdl2::pixels::Color;
 use sdl2::rect::Point;
 
@@ -18,7 +18,7 @@ struct Registers {
     bg_attribute_lower: u8,
 }
 
-pub struct Ppu<'a> {
+pub struct Ppu {
     pub scan_line: i16,
     pub cycle_count: u16,
     vblank: bool,
@@ -40,8 +40,8 @@ pub struct Ppu<'a> {
     sprite_height: u8,
     sprite0_enabled: bool,
     sprite0_hit: bool,
-    renderer: Renderer<'a>,
-    renderer_nametable: Option<Renderer<'a>>,
+    renderer: WindowCanvas,
+    renderer_nametable: Option<WindowCanvas>,
     colors: Vec<u8>,
 }
 
@@ -56,8 +56,8 @@ fn copy_bits(dest: u16, src: u16, mask: u16) -> u16 {
     return tmp | (src & mask);
 }
 
-impl<'a> Ppu<'a> {
-    pub fn new(sdl_context: &mut sdl2::Sdl, show_name_table: bool) -> Ppu<'a> {
+impl Ppu {
+    pub fn new(sdl_context: &mut sdl2::Sdl, show_name_table: bool) -> Ppu {
         let video_subsystem = sdl_context.video().unwrap();
 
         let window = video_subsystem.window("nesemu", 256, 240)
@@ -65,14 +65,14 @@ impl<'a> Ppu<'a> {
             .build()
             .unwrap();
 
-        let renderer = window.renderer().build().unwrap();
+        let renderer = window.into_canvas().build().unwrap();
 
         let renderer_nametable = if show_name_table {
             let window = video_subsystem.window("nametable", 512, 480)
                 .position_centered()
                 .build()
                 .unwrap();
-            Some(window.renderer().build().unwrap())
+            Some(window.into_canvas().build().unwrap())
         }
         else {
             None

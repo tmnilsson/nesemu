@@ -9,8 +9,8 @@ use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 
 
-pub struct Machine<'a> {
-    pub ppu: ppu::Ppu<'a>,
+pub struct Machine {
+    pub ppu: ppu::Ppu,
     controller: controller::Controller,
     ram: Vec<u8>,
     nmi_line: bool,
@@ -30,7 +30,7 @@ pub fn get_state_string(cpu: &cpu::Cpu, machine: &mut Machine) -> String {
 }
 
 
-impl<'a> Machine<'a> {
+impl Machine {
     pub fn new(show_name_table: bool) -> Self {
         let mut sdl_context = sdl2::init().unwrap();
 
