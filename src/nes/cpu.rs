@@ -631,20 +631,13 @@ impl Cpu {
         Cpu::update_zero_negative(&mut self.reg.status, self.reg.a);
     }
 
-    pub fn execute_until_nmi(&mut self, m: &mut Machine) {
-        while !self.execute(m) {
-        }
-    }
-
-    pub fn execute(&mut self, m: &mut Machine) -> bool {
+    pub fn execute(&mut self, m: &mut Machine) {
         if self.nmi_triggered {
             self.nmi_triggered = false;
             self.perform_interrupt(m, 0xfffa, 0xfffb, true);
-            true
         }
         else {
             self.execute_instruction(m);
-            false
         }
     }
 

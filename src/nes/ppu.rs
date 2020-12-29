@@ -21,7 +21,7 @@ struct Registers {
 pub struct Ppu {
     pub scan_line: i16,
     pub cycle_count: u16,
-    vblank: bool,
+    pub vblank: bool,
     vram_addr_increment: u16,
     gen_nmi_at_vblank: bool,
     pub mem_read_mut_enabled: bool,

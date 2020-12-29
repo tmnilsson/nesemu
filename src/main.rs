@@ -78,7 +78,12 @@ fn main()
             }
             None | Some(_) => {}
         }
-        cpu.execute_until_nmi(&mut machine);
+        while machine.ppu.vblank {
+            cpu.execute(&mut machine);
+        }
+        while !machine.ppu.vblank {
+            cpu.execute(&mut machine);
+        }
         machine.present();
         let now = PreciseTime::now();
         let duration = prev_time.to(now);
