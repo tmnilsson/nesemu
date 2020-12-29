@@ -3,6 +3,7 @@ extern crate sdl2;
 pub mod cpu;
 pub mod cartridge;
 mod ppu;
+mod apu;
 mod controller;
 
 use sdl2::event::Event;
@@ -11,6 +12,7 @@ use sdl2::keyboard::Keycode;
 
 pub struct Machine {
     pub ppu: ppu::Ppu,
+    apu: apu::Apu,
     controller: controller::Controller,
     ram: Vec<u8>,
     nmi_line: bool,
@@ -37,6 +39,7 @@ impl Machine {
         let ram = vec![0; 0x800];
         Machine {
             ppu: ppu::Ppu::new(&mut sdl_context, show_name_table),
+            apu: apu::Apu::new(&mut sdl_context),
             controller: controller::Controller::new(),
             ram: ram,
             nmi_line: true,
@@ -139,6 +142,7 @@ impl Machine {
             self.ppu.write_mem(reg_address, value, cartridge);
         }
         else if address < 0x4014 {
+            self.apu.write_mem(address, value);
         }
         else if address == 0x4014 {
             let ref ram = self.ram;
@@ -146,9 +150,13 @@ impl Machine {
             self.ppu.perform_dma(cartridge, &ram, value as u16 * 0x100);
         }
         else if address == 0x4015 {
+            self.apu.write_mem(address, value);
         }
         else if address == 0x4016 {
             self.controller.write_mem(address, value);
+        }
+        else if address == 0x4017 {
+            self.apu.write_mem(address, value);
         }
         else if address < 0x4020 {
         }
