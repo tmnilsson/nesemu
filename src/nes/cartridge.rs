@@ -290,7 +290,11 @@ impl Cartridge {
         if address < 0x2000 {
             match self.mapper {
                 Mapper::NROM => {
-                    self.rom.chr_rom[address as usize]
+                    if self.rom.chr_rom.len() > 0 {
+                        self.rom.chr_rom[address as usize]
+                    } else {
+                        0
+                    }
                 }
                 Mapper::MMC1 {chr_size_bit, chr_bank_0, chr_bank_1, ref chr_ram, ..} => {
                     let chr_mem = match *chr_ram {
