@@ -1,15 +1,18 @@
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 
 const CYCLE_FREQ: f64 = 1.789773 * 1000000.0 / 2.0;
+const WAVEFORM: [u8; 8] = [0, 1, 1, 1, 1, 0, 0, 0];
 
 pub struct Apu {
     output_sample_generator: OutputSampleGenerator,
     cycle_count: u64,
     audio_level: f32,
     pulse1_enabled: bool,
-    phase_inc: f32,
-    phase: f32,
-    volume: f32,
+    pulse1_timer_max: u16,
+    pulse1_timer: u16,
+    pulse1_sequence_index: usize,
+    pulse1_volume: u8,
+    pulse1_output_level: u8,
 }
 
 impl Apu {
@@ -19,9 +22,11 @@ impl Apu {
             cycle_count: 0,
             audio_level: 0.0,
             pulse1_enabled: false,
-            phase_inc: 440.0 / CYCLE_FREQ as f32,
-            phase: 0.0,
-            volume: 0.25
+            pulse1_timer_max: 0xc9,
+            pulse1_timer: 0,
+            pulse1_sequence_index: 0,
+            pulse1_volume: 15,
+            pulse1_output_level: 0,
         }
     }
 
@@ -36,17 +41,21 @@ impl Apu {
     }
 
     fn update_audio_level(&mut self) {
-        let volume = if self.pulse1_enabled {
-            self.volume
+        if self.pulse1_timer == 0 {
+            self.pulse1_timer = self.pulse1_timer_max;
+            self.pulse1_sequence_index += 1;
+            if self.pulse1_sequence_index > 7 {
+                self.pulse1_sequence_index = 0;
+            }
+            self.pulse1_output_level = &WAVEFORM[self.pulse1_sequence_index] * self.pulse1_volume;
+            if self.pulse1_timer_max < 8 {
+                self.pulse1_output_level = 0;
+            }
         } else {
-            0.0
-        };
-        self.audio_level = if self.phase <= 0.5 {
-            volume
-        } else {
-            -volume
-        };
-        self.phase = (self.phase + self.phase_inc) % 1.0;
+            self.pulse1_timer -= 1
+        }
+
+        self.audio_level = self.pulse1_output_level as f32 / 15.0;
     }
 
     pub fn get_queue_size_ms(&self) -> usize {
