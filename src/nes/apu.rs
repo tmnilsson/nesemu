@@ -12,13 +12,7 @@ pub struct Apu {
     output_sample_generator: OutputSampleGenerator,
     cycle_count: u64,
     audio_level: f32,
-    pulse1_enabled: bool,
-    pulse1_duty_cycle: usize,
-    pulse1_timer_max: u16,
-    pulse1_timer: u16,
-    pulse1_sequence_index: usize,
-    pulse1_volume: u8,
-    pulse1_output_level: u8,
+    pulse1: PulseChannel,
 }
 
 impl Apu {
@@ -27,13 +21,7 @@ impl Apu {
             output_sample_generator: OutputSampleGenerator::new(sdl_context),
             cycle_count: 0,
             audio_level: 0.0,
-            pulse1_enabled: false,
-            pulse1_duty_cycle: 0,
-            pulse1_timer_max: 0,
-            pulse1_timer: 0,
-            pulse1_sequence_index: 0,
-            pulse1_volume: 0,
-            pulse1_output_level: 0,
+            pulse1: PulseChannel::new(),
         }
     }
 
@@ -47,25 +35,9 @@ impl Apu {
         }
     }
 
-    fn update_pulse1_level(&mut self) {
-        if self.pulse1_timer == 0 {
-            self.pulse1_timer = self.pulse1_timer_max;
-            self.pulse1_sequence_index += 1;
-            if self.pulse1_sequence_index > 7 {
-                self.pulse1_sequence_index = 0;
-            }
-            self.pulse1_output_level = &WAVEFORMS[self.pulse1_duty_cycle][self.pulse1_sequence_index] * self.pulse1_volume;
-            if self.pulse1_timer_max < 8 {
-                self.pulse1_output_level = 0;
-            }
-        } else {
-            self.pulse1_timer -= 1
-        }
-    }
-
     fn update_audio_level(&mut self) {
-        self.update_pulse1_level();
-        let pulse_out = 95.88 / ((8128.0 / (self.pulse1_output_level as f32)) + 100.0);
+        self.pulse1.update_level();
+        let pulse_out = 95.88 / ((8128.0 / (self.pulse1.output_level as f32)) + 100.0);
         self.audio_level = pulse_out;
     }
 
@@ -76,20 +48,79 @@ impl Apu {
     pub fn write_mem(&mut self, address: u16, value: u8) {
         match address {
             0x4000 => {
-                self.pulse1_duty_cycle = (value >> 6).into();
-                self.pulse1_volume = value & 0x0F;
+                self.pulse1.set_control1(value);
             }
             0x4002 => {
-                self.pulse1_timer_max = (self.pulse1_timer_max & 0xFF00) | value as u16;
+                self.pulse1.set_timer_max_low(value);
             }
             0x4003 => {
-                self.pulse1_timer_max = (self.pulse1_timer_max & 0x00FF) | ((value as u16) << 8);
+                self.pulse1.set_timer_max_high(value);
             }
             0x4015 => {
-                self.pulse1_enabled = value & 0x01 != 0;
+                self.pulse1.set_enabled(value & 0x01 != 0);
             }
             _ => { }
         }
+    }
+}
+
+struct PulseChannel {
+    pub enabled: bool,
+    pub duty_cycle: usize,
+    pub timer_max: u16,
+    timer: u16,
+    sequence_index: usize,
+    pub volume: u8,
+    pub output_level: u8,
+}
+
+impl PulseChannel {
+    fn new() -> PulseChannel {
+        PulseChannel {
+            enabled: false,
+            duty_cycle: 0,
+            timer_max: 0,
+            timer: 0,
+            sequence_index: 0,
+            volume: 0,
+            output_level: 0,
+        }
+    }
+
+    fn update_level(&mut self) {
+        if self.timer == 0 {
+            self.timer = self.timer_max;
+            self.sequence_index += 1;
+            if self.sequence_index > 7 {
+                self.sequence_index = 0;
+            }
+            self.output_level = &WAVEFORMS[self.duty_cycle][self.sequence_index] * self.volume;
+            if self.timer_max < 8 {
+                self.output_level = 0;
+            }
+        } else {
+            self.timer -= 1
+        }
+        if !self.enabled {
+            self.output_level = 0;
+        }
+    }
+
+    fn set_control1(&mut self, value: u8) {
+        self.duty_cycle = (value >> 6).into();
+        self.volume = value & 0x0F;
+    }
+
+    fn set_timer_max_low(&mut self, value: u8) {
+        self.timer_max = (self.timer_max & 0xFF00) | value as u16;
+    }
+
+    fn set_timer_max_high(&mut self, value: u8) {
+        self.timer_max = (self.timer_max & 0x00FF) | ((value as u16) << 8);
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
     }
 }
 
