@@ -13,6 +13,7 @@ pub struct Apu {
     cycle_count: u64,
     audio_level: f32,
     pulse1: PulseChannel,
+    pulse2: PulseChannel,
 }
 
 impl Apu {
@@ -22,6 +23,7 @@ impl Apu {
             cycle_count: 0,
             audio_level: 0.0,
             pulse1: PulseChannel::new(),
+            pulse2: PulseChannel::new(),
         }
     }
 
@@ -37,7 +39,8 @@ impl Apu {
 
     fn update_audio_level(&mut self) {
         self.pulse1.update_level();
-        let pulse_out = 95.88 / ((8128.0 / (self.pulse1.output_level as f32)) + 100.0);
+        self.pulse2.update_level();
+        let pulse_out = 95.88 / ((8128.0 / (self.pulse1.output_level as f32 + self.pulse2.output_level as f32)) + 100.0);
         self.audio_level = pulse_out;
     }
 
@@ -56,8 +59,18 @@ impl Apu {
             0x4003 => {
                 self.pulse1.set_timer_max_high(value);
             }
+            0x4004 => {
+                self.pulse2.set_control1(value);
+            }
+            0x4006 => {
+                self.pulse2.set_timer_max_low(value);
+            }
+            0x4007 => {
+                self.pulse2.set_timer_max_high(value);
+            }
             0x4015 => {
                 self.pulse1.set_enabled(value & 0x01 != 0);
+                self.pulse2.set_enabled(value & 0x02 != 0);
             }
             _ => { }
         }
