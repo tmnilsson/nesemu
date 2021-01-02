@@ -185,7 +185,7 @@ impl Ppu {
                                 let red = self.colors[color_index * 3 + 0];
                                 let green = self.colors[color_index * 3 + 1];
                                 let blue = self.colors[color_index * 3 + 2];
-                                let mut renderer = self.renderer_nametable.as_mut().unwrap();
+                                let renderer = self.renderer_nametable.as_mut().unwrap();
                                 renderer.set_draw_color(Color::RGB(red, green, blue));
                                 renderer.draw_point(
                                     Point::new(screen_x as i32, screen_y as i32)).unwrap();
@@ -555,7 +555,7 @@ impl Ppu {
             0x2004 => {
                 if self.vblank {
                     self.oam[self.oam_addr as usize] = value;
-                    self.oam_addr.wrapping_add(1);
+                    self.oam_addr = self.oam_addr.wrapping_add(1);
                 }
             }
             0x2005 => {
