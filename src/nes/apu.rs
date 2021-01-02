@@ -40,7 +40,7 @@ impl Apu {
         }
     }
 
-    fn update_audio_level(&mut self) {
+    fn update_pulse1_level(&mut self) {
         if self.pulse1_timer == 0 {
             self.pulse1_timer = self.pulse1_timer_max;
             self.pulse1_sequence_index += 1;
@@ -54,8 +54,12 @@ impl Apu {
         } else {
             self.pulse1_timer -= 1
         }
+    }
 
-        self.audio_level = self.pulse1_output_level as f32 / 15.0;
+    fn update_audio_level(&mut self) {
+        self.update_pulse1_level();
+        let pulse_out = 95.88 / ((8128.0 / (self.pulse1_output_level as f32)) + 100.0);
+        self.audio_level = pulse_out;
     }
 
     pub fn get_queue_size_ms(&self) -> usize {
