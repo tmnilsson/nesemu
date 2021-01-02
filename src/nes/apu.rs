@@ -22,10 +22,10 @@ impl Apu {
             cycle_count: 0,
             audio_level: 0.0,
             pulse1_enabled: false,
-            pulse1_timer_max: 0xc9,
+            pulse1_timer_max: 0,
             pulse1_timer: 0,
             pulse1_sequence_index: 0,
-            pulse1_volume: 15,
+            pulse1_volume: 0,
             pulse1_output_level: 0,
         }
     }
@@ -68,6 +68,15 @@ impl Apu {
 
     pub fn write_mem(&mut self, address: u16, value: u8) {
         match address {
+            0x4000 => {
+                self.pulse1_volume = value & 0x0F;
+            }
+            0x4002 => {
+                self.pulse1_timer_max = (self.pulse1_timer_max & 0xFF00) | value as u16;
+            }
+            0x4003 => {
+                self.pulse1_timer_max = (self.pulse1_timer_max & 0x00FF) | ((value as u16) << 8);
+            }
             0x4015 => {
                 self.pulse1_enabled = value & 0x01 != 0;
             }
