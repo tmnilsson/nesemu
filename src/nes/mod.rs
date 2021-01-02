@@ -100,11 +100,16 @@ impl Machine {
     }
     
     fn step_cycle(&mut self, count: u16) -> bool {
+        self.apu.step_cycle(count);
         let old_nmi_line = self.nmi_line;
         let cart = self.cartridge.as_mut().unwrap();
         self.nmi_line = self.ppu.step_cycle(count, cart);
         let nmi_triggered = old_nmi_line && !self.nmi_line;
         nmi_triggered
+    }
+
+    pub fn get_audio_queue_size_ms(&self) -> usize {
+        self.apu.get_queue_size_ms()
     }
 
     fn read_mem(&mut self, address: u16) -> u8 {
