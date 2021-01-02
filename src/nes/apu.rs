@@ -1,13 +1,19 @@
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 
 const CYCLE_FREQ: f64 = 1.789773 * 1000000.0 / 2.0;
-const WAVEFORM: [u8; 8] = [0, 1, 1, 1, 1, 0, 0, 0];
+const WAVEFORMS: [[u8; 8]; 4] = [
+    [0, 1, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 0, 0, 0],
+    [1, 0, 0, 1, 1, 1, 1, 1],
+];
 
 pub struct Apu {
     output_sample_generator: OutputSampleGenerator,
     cycle_count: u64,
     audio_level: f32,
     pulse1_enabled: bool,
+    pulse1_duty_cycle: usize,
     pulse1_timer_max: u16,
     pulse1_timer: u16,
     pulse1_sequence_index: usize,
@@ -22,6 +28,7 @@ impl Apu {
             cycle_count: 0,
             audio_level: 0.0,
             pulse1_enabled: false,
+            pulse1_duty_cycle: 0,
             pulse1_timer_max: 0,
             pulse1_timer: 0,
             pulse1_sequence_index: 0,
@@ -47,7 +54,7 @@ impl Apu {
             if self.pulse1_sequence_index > 7 {
                 self.pulse1_sequence_index = 0;
             }
-            self.pulse1_output_level = &WAVEFORM[self.pulse1_sequence_index] * self.pulse1_volume;
+            self.pulse1_output_level = &WAVEFORMS[self.pulse1_duty_cycle][self.pulse1_sequence_index] * self.pulse1_volume;
             if self.pulse1_timer_max < 8 {
                 self.pulse1_output_level = 0;
             }
@@ -69,6 +76,7 @@ impl Apu {
     pub fn write_mem(&mut self, address: u16, value: u8) {
         match address {
             0x4000 => {
+                self.pulse1_duty_cycle = (value >> 6).into();
                 self.pulse1_volume = value & 0x0F;
             }
             0x4002 => {
