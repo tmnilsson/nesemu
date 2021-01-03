@@ -1,12 +1,6 @@
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 
 const CYCLE_FREQ: f64 = 1.789773 * 1000000.0 / 2.0;
-const WAVEFORMS: [[u8; 8]; 4] = [
-    [0, 1, 0, 0, 0, 0, 0, 0],
-    [0, 1, 1, 0, 0, 0, 0, 0],
-    [0, 1, 1, 1, 1, 0, 0, 0],
-    [1, 0, 0, 1, 1, 1, 1, 1],
-];
 
 pub struct Apu {
     output_sample_generator: OutputSampleGenerator,
@@ -14,6 +8,7 @@ pub struct Apu {
     audio_level: f32,
     pulse1: PulseChannel,
     pulse2: PulseChannel,
+    triangle: TriangleChannel,
 }
 
 impl Apu {
@@ -24,12 +19,16 @@ impl Apu {
             audio_level: 0.0,
             pulse1: PulseChannel::new(),
             pulse2: PulseChannel::new(),
+            triangle: TriangleChannel::new(),
         }
     }
 
     pub fn step_cycle(&mut self, count: u16) {
         for _ in 0..count {
+            self.triangle.update_level();
             if self.cycle_count % 2 == 0 {
+                self.pulse1.update_level();
+                self.pulse2.update_level();
                 self.update_audio_level();
                 self.output_sample_generator.maybe_generate(self.audio_level);
             }
@@ -38,10 +37,9 @@ impl Apu {
     }
 
     fn update_audio_level(&mut self) {
-        self.pulse1.update_level();
-        self.pulse2.update_level();
         let pulse_out = 95.88 / ((8128.0 / (self.pulse1.output_level as f32 + self.pulse2.output_level as f32)) + 100.0);
-        self.audio_level = pulse_out;
+        let tnd_out = 159.79 / (1.0 / (self.triangle.output_level as f32 / 8227.0) + 100.0);
+        self.audio_level = pulse_out + tnd_out;
     }
 
     pub fn get_queue_size_ms(&self) -> usize {
@@ -68,9 +66,16 @@ impl Apu {
             0x4007 => {
                 self.pulse2.set_timer_max_high(value);
             }
+            0x400A => {
+                self.triangle.set_timer_max_low(value);
+            }
+            0x400B => {
+                self.triangle.set_length_counter_load_and_timer_max_high(value);
+            }
             0x4015 => {
                 self.pulse1.set_enabled(value & 0x01 != 0);
                 self.pulse2.set_enabled(value & 0x02 != 0);
+                self.triangle.set_enabled(value & 0x04 != 0);
             }
             _ => { }
         }
@@ -88,6 +93,13 @@ struct PulseChannel {
 }
 
 impl PulseChannel {
+    const WAVEFORMS: [[u8; 8]; 4] = [
+        [0, 1, 0, 0, 0, 0, 0, 0],
+        [0, 1, 1, 0, 0, 0, 0, 0],
+        [0, 1, 1, 1, 1, 0, 0, 0],
+        [1, 0, 0, 1, 1, 1, 1, 1],
+    ];
+
     fn new() -> PulseChannel {
         PulseChannel {
             enabled: false,
@@ -107,7 +119,7 @@ impl PulseChannel {
             if self.sequence_index > 7 {
                 self.sequence_index = 0;
             }
-            self.output_level = &WAVEFORMS[self.duty_cycle][self.sequence_index] * self.volume;
+            self.output_level = &PulseChannel::WAVEFORMS[self.duty_cycle][self.sequence_index] * self.volume;
             if self.timer_max < 8 {
                 self.output_level = 0;
             }
@@ -129,6 +141,59 @@ impl PulseChannel {
     }
 
     fn set_timer_max_high(&mut self, value: u8) {
+        self.timer_max = (self.timer_max & 0x00FF) | ((value as u16) << 8);
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+}
+
+struct TriangleChannel {
+    pub enabled: bool,
+    pub timer_max: u16,
+    timer: u16,
+    sequence_index: usize,
+    pub output_level: u8,
+}
+
+impl TriangleChannel {
+    const WAVEFORM: [u8; 32] = [
+        15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    ];
+
+    fn new() -> TriangleChannel {
+        TriangleChannel {
+            enabled: false,
+            timer_max: 0,
+            timer: 0,
+            sequence_index: 0,
+            output_level: 0,
+        }
+    }
+
+    fn update_level(&mut self) {
+        if self.timer == 0 {
+            self.timer = self.timer_max;
+            self.sequence_index += 1;
+            if self.sequence_index > 31 {
+                self.sequence_index = 0;
+            }
+            self.output_level = TriangleChannel::WAVEFORM[self.sequence_index];
+        } else {
+            self.timer -= 1
+        }
+        if !self.enabled {
+            self.output_level = 0;
+        }
+    }
+
+    fn set_timer_max_low(&mut self, value: u8) {
+        self.timer_max = (self.timer_max & 0xFF00) | value as u16;
+    }
+
+    fn set_length_counter_load_and_timer_max_high(&mut self, value: u8) {
         self.timer_max = (self.timer_max & 0x00FF) | ((value as u16) << 8);
     }
 
