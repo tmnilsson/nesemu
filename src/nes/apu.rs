@@ -2,8 +2,14 @@ use sdl2::audio::{AudioQueue, AudioSpecDesired};
 
 const CYCLE_FREQ: f64 = 1.789773 * 1000000.0 / 2.0;
 
+enum FrameCounterSequence {
+    FourStep,
+    FiveStep,
+}
+
 pub struct Apu {
     output_sample_generator: OutputSampleGenerator,
+    frame_counter_sequence: FrameCounterSequence,
     cycle_count: u64,
     audio_level: f32,
     pulse1: PulseChannel,
@@ -15,6 +21,7 @@ impl Apu {
     pub fn new(sdl_context: &mut sdl2::Sdl) -> Apu {
         Apu {
             output_sample_generator: OutputSampleGenerator::new(sdl_context),
+            frame_counter_sequence: FrameCounterSequence::FourStep,
             cycle_count: 0,
             audio_level: 0.0,
             pulse1: PulseChannel::new(),
@@ -33,7 +40,42 @@ impl Apu {
                 self.output_sample_generator.maybe_generate(self.audio_level);
             }
             self.cycle_count += 1;
+            let cycle_wrap_around = match self.frame_counter_sequence {
+                FrameCounterSequence::FourStep => 14915 * 2,
+                FrameCounterSequence::FiveStep => 18641 * 2,
+            };
+            if self.cycle_count >= cycle_wrap_around {
+                self.cycle_count = 0;
+            }
+            match self.frame_counter_sequence {
+                FrameCounterSequence::FourStep => {
+                    if self.cycle_count == 7456*2+1 || self.cycle_count == 14914*2+1 {
+                        self.step_quarter_frame_clock();
+                        self.step_half_frame_clock();
+                    }
+                    else if self.cycle_count == 3728*2+1 || self.cycle_count == 11185*2+1 {
+                        self.step_quarter_frame_clock();
+                    }
+                }
+                FrameCounterSequence::FiveStep => {
+                    if self.cycle_count == 7456*2+1 || self.cycle_count == 18640*2+1 {
+                        self.step_quarter_frame_clock();
+                        self.step_half_frame_clock();
+                    }
+                    else if self.cycle_count == 3728*2+1 || self.cycle_count == 11185*2+1 {
+                        self.step_quarter_frame_clock();
+                    }
+                }
+            }
         }
+    }
+
+    fn step_quarter_frame_clock(&mut self) {
+        self.pulse1.step_envelope_clock();
+        self.pulse2.step_envelope_clock();
+    }
+
+    fn step_half_frame_clock(&mut self) {
     }
 
     fn update_audio_level(&mut self) {
@@ -77,18 +119,96 @@ impl Apu {
                 self.pulse2.set_enabled(value & 0x02 != 0);
                 self.triangle.set_enabled(value & 0x04 != 0);
             }
+            0x4017 => {
+                self.frame_counter_sequence = if value & 0x80 == 0 {
+                    FrameCounterSequence::FourStep
+                } else {
+                    FrameCounterSequence::FiveStep
+                };
+            }
             _ => { }
         }
     }
 }
 
+struct Envelope {
+    volume: u8,  // also used as envelope period (like in the hardware)
+    loop_flag: bool,
+    constant_volume_flag: bool,
+    start_flag: bool,
+    decay_level: u8,
+    divider: u8,
+}
+
+impl Envelope {
+    fn new() -> Envelope {
+        Envelope {
+            volume: 0,
+            constant_volume_flag: false,
+            loop_flag: false,
+            start_flag: false,
+            decay_level: 0,
+            divider: 0,
+        }
+    }
+
+    fn set_volume(&mut self, volume: u8) {
+        self.volume = volume;
+    }
+
+    fn set_loop_flag(&mut self, loop_flag: bool) {
+        self.loop_flag = loop_flag;
+    }
+
+    fn set_constant_volume_flag(&mut self, constant_volume_flag: bool) {
+        self.constant_volume_flag = constant_volume_flag;
+    }
+
+    fn set_start_flag(&mut self) {
+        self.start_flag = true;
+    }
+
+    fn step_clock(&mut self) {
+        if self.start_flag {
+            self.start_flag = false;
+            self.decay_level = 15;
+            self.divider = self.volume;
+        }
+        else {
+            if self.divider > 0 {
+                self.divider -= 1;
+            }
+            else {
+                self.divider = self.volume;
+                if self.decay_level > 0 {
+                    self.decay_level -= 1;
+                }
+                else {
+                    if self.loop_flag {
+                        self.decay_level = 15;
+                    }
+                }
+            }
+        }
+    }
+
+    fn get_output_level(&self) -> u8 {
+        if self.constant_volume_flag {
+            self.volume
+        }
+        else {
+            self.decay_level
+        }
+    }
+}
+
 struct PulseChannel {
-    pub enabled: bool,
-    pub duty_cycle: usize,
-    pub timer_max: u16,
+    enabled: bool,
+    duty_cycle: usize,
+    timer_max: u16,
     timer: u16,
     sequence_index: usize,
-    pub volume: u8,
+    envelope: Envelope,
     pub output_level: u8,
 }
 
@@ -107,7 +227,7 @@ impl PulseChannel {
             timer_max: 0,
             timer: 0,
             sequence_index: 0,
-            volume: 0,
+            envelope: Envelope::new(),
             output_level: 0,
         }
     }
@@ -119,7 +239,7 @@ impl PulseChannel {
             if self.sequence_index > 7 {
                 self.sequence_index = 0;
             }
-            self.output_level = &PulseChannel::WAVEFORMS[self.duty_cycle][self.sequence_index] * self.volume;
+            self.output_level = &PulseChannel::WAVEFORMS[self.duty_cycle][self.sequence_index] * self.envelope.get_output_level();
             if self.timer_max < 8 {
                 self.output_level = 0;
             }
@@ -133,7 +253,9 @@ impl PulseChannel {
 
     fn set_control1(&mut self, value: u8) {
         self.duty_cycle = (value >> 6).into();
-        self.volume = value & 0x0F;
+        self.envelope.set_loop_flag(value & 0x20 != 0);
+        self.envelope.set_constant_volume_flag(value & 0x10 != 0);
+        self.envelope.set_volume(value & 0x0F);
     }
 
     fn set_timer_max_low(&mut self, value: u8) {
@@ -142,10 +264,15 @@ impl PulseChannel {
 
     fn set_timer_max_high(&mut self, value: u8) {
         self.timer_max = (self.timer_max & 0x00FF) | ((value as u16) << 8);
+        self.envelope.set_start_flag();
     }
 
     fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+    }
+
+    fn step_envelope_clock(&mut self) {
+        self.envelope.step_clock();
     }
 }
 
