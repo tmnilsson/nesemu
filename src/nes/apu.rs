@@ -78,6 +78,7 @@ impl Apu {
     fn step_half_frame_clock(&mut self) {
         self.pulse1.step_length_counter_clock();
         self.pulse2.step_length_counter_clock();
+        self.triangle.step_length_counter_clock();
     }
 
     fn update_audio_level(&mut self) {
@@ -109,6 +110,9 @@ impl Apu {
             }
             0x4007 => {
                 self.pulse2.set_timer_max_high(value);
+            }
+            0x4008 => {
+                self.triangle.set_halt_and_linear_counter_load(value);
             }
             0x400A => {
                 self.triangle.set_timer_max_low(value);
@@ -334,10 +338,10 @@ impl PulseChannel {
 }
 
 struct TriangleChannel {
-    pub enabled: bool,
     pub timer_max: u16,
     timer: u16,
     sequence_index: usize,
+    length_counter: LengthCounter,
     pub output_level: u8,
 }
 
@@ -349,10 +353,10 @@ impl TriangleChannel {
 
     fn new() -> TriangleChannel {
         TriangleChannel {
-            enabled: false,
             timer_max: 0,
             timer: 0,
             sequence_index: 0,
+            length_counter: LengthCounter::new(),
             output_level: 0,
         }
     }
@@ -368,9 +372,14 @@ impl TriangleChannel {
         } else {
             self.timer -= 1
         }
-        if !self.enabled {
+        if self.length_counter.is_zero() {
             self.output_level = 0;
         }
+    }
+
+    fn set_halt_and_linear_counter_load(&mut self, value: u8) {
+        let control_and_halt_flag = value & 0x80 != 0;
+        self.length_counter.set_halt(control_and_halt_flag);
     }
 
     fn set_timer_max_low(&mut self, value: u8) {
@@ -378,11 +387,16 @@ impl TriangleChannel {
     }
 
     fn set_length_counter_load_and_timer_max_high(&mut self, value: u8) {
-        self.timer_max = (self.timer_max & 0x00FF) | ((value as u16) << 8);
+        self.timer_max = (self.timer_max & 0x00FF) | ((value as u16 & 0x7) << 8);
+        self.length_counter.load(value >> 3);
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        self.length_counter.set_enabled(enabled);
+    }
+
+    fn step_length_counter_clock(&mut self) {
+        self.length_counter.step_clock();
     }
 }
 
