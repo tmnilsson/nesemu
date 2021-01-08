@@ -76,6 +76,8 @@ impl Apu {
     }
 
     fn step_half_frame_clock(&mut self) {
+        self.pulse1.step_length_counter_clock();
+        self.pulse2.step_length_counter_clock();
     }
 
     fn update_audio_level(&mut self) {
@@ -202,13 +204,61 @@ impl Envelope {
     }
 }
 
-struct PulseChannel {
+struct LengthCounter {
+    counter: u8,
     enabled: bool,
+    halt: bool,
+}
+
+impl LengthCounter {
+    const LENGTH_TABLE: [u8; 32] = [
+        10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14,
+        12, 16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30,
+    ];
+
+    fn new() -> LengthCounter {
+        LengthCounter {
+            counter: 0,
+            enabled: false,
+            halt: false,
+        }
+    }
+
+    fn step_clock(&mut self) {
+        if self.counter > 0 && !self.halt {
+            self.counter -= 1;
+        }
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !self.enabled {
+            self.counter = 0;
+        }
+    }
+
+    fn set_halt(&mut self, halt: bool) {
+        self.halt = halt;
+    }
+
+    fn load(&mut self, value: u8) {
+        if self.enabled {
+            self.counter = LengthCounter::LENGTH_TABLE[value as usize];
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        return self.counter == 0;
+    }
+}
+
+struct PulseChannel {
     duty_cycle: usize,
     timer_max: u16,
     timer: u16,
     sequence_index: usize,
     envelope: Envelope,
+    length_counter: LengthCounter,
     pub output_level: u8,
 }
 
@@ -222,12 +272,12 @@ impl PulseChannel {
 
     fn new() -> PulseChannel {
         PulseChannel {
-            enabled: false,
             duty_cycle: 0,
             timer_max: 0,
             timer: 0,
             sequence_index: 0,
             envelope: Envelope::new(),
+            length_counter: LengthCounter::new(),
             output_level: 0,
         }
     }
@@ -246,14 +296,16 @@ impl PulseChannel {
         } else {
             self.timer -= 1
         }
-        if !self.enabled {
+        if self.length_counter.is_zero() {
             self.output_level = 0;
         }
     }
 
     fn set_control1(&mut self, value: u8) {
         self.duty_cycle = (value >> 6).into();
-        self.envelope.set_loop_flag(value & 0x20 != 0);
+        let loop_and_halt_flag = value & 0x20 != 0;
+        self.envelope.set_loop_flag(loop_and_halt_flag);
+        self.length_counter.set_halt(loop_and_halt_flag);
         self.envelope.set_constant_volume_flag(value & 0x10 != 0);
         self.envelope.set_volume(value & 0x0F);
     }
@@ -263,16 +315,21 @@ impl PulseChannel {
     }
 
     fn set_timer_max_high(&mut self, value: u8) {
-        self.timer_max = (self.timer_max & 0x00FF) | ((value as u16) << 8);
+        self.timer_max = (self.timer_max & 0x00FF) | ((value as u16 & 0x07) << 8);
+        self.length_counter.load(value >> 3);
         self.envelope.set_start_flag();
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        self.length_counter.set_enabled(enabled);
     }
 
     fn step_envelope_clock(&mut self) {
         self.envelope.step_clock();
+    }
+
+    fn step_length_counter_clock(&mut self) {
+        self.length_counter.step_clock();
     }
 }
 
