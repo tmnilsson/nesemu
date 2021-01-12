@@ -73,6 +73,7 @@ impl Apu {
     fn step_quarter_frame_clock(&mut self) {
         self.pulse1.step_envelope_clock();
         self.pulse2.step_envelope_clock();
+        self.triangle.step_linear_counter_clock();
     }
 
     fn step_half_frame_clock(&mut self) {
@@ -337,11 +338,55 @@ impl PulseChannel {
     }
 }
 
+struct LinearCounter {
+    counter: u8,
+    reload_value: u8,
+    reload_flag: bool,
+    control_flag: bool,
+}
+
+impl LinearCounter {
+    fn new() -> LinearCounter {
+        LinearCounter {
+            counter: 0,
+            reload_value: 0,
+            reload_flag: false,
+            control_flag: false,
+        }
+    }
+
+    fn step_clock(&mut self) {
+        if self.reload_flag {
+            self.counter = self.reload_value;
+        }
+        else if self.counter > 0 {
+            self.counter -= 1;
+        }
+        if !self.control_flag {
+            self.reload_flag = false;
+        }
+    }
+
+    fn setup(&mut self, value: u8) {
+        self.control_flag = value & 0x80 != 0;
+        self.reload_value = value & 0x7F;
+    }
+
+    fn set_reload_flag(&mut self) {
+        self.reload_flag = true;
+    }
+
+    fn is_zero(&self) -> bool {
+        return self.counter == 0;
+    }
+}
+
 struct TriangleChannel {
     pub timer_max: u16,
     timer: u16,
     sequence_index: usize,
     length_counter: LengthCounter,
+    linear_counter: LinearCounter,
     pub output_level: u8,
 }
 
@@ -357,6 +402,7 @@ impl TriangleChannel {
             timer: 0,
             sequence_index: 0,
             length_counter: LengthCounter::new(),
+            linear_counter: LinearCounter::new(),
             output_level: 0,
         }
     }
@@ -372,7 +418,7 @@ impl TriangleChannel {
         } else {
             self.timer -= 1
         }
-        if self.length_counter.is_zero() {
+        if self.length_counter.is_zero() || self.linear_counter.is_zero() {
             self.output_level = 0;
         }
     }
@@ -380,6 +426,7 @@ impl TriangleChannel {
     fn set_halt_and_linear_counter_load(&mut self, value: u8) {
         let control_and_halt_flag = value & 0x80 != 0;
         self.length_counter.set_halt(control_and_halt_flag);
+        self.linear_counter.setup(value);
     }
 
     fn set_timer_max_low(&mut self, value: u8) {
@@ -389,6 +436,7 @@ impl TriangleChannel {
     fn set_length_counter_load_and_timer_max_high(&mut self, value: u8) {
         self.timer_max = (self.timer_max & 0x00FF) | ((value as u16 & 0x7) << 8);
         self.length_counter.load(value >> 3);
+        self.linear_counter.set_reload_flag();
     }
 
     fn set_enabled(&mut self, enabled: bool) {
@@ -397,6 +445,10 @@ impl TriangleChannel {
 
     fn step_length_counter_clock(&mut self) {
         self.length_counter.step_clock();
+    }
+
+    fn step_linear_counter_clock(&mut self) {
+        self.linear_counter.step_clock();
     }
 }
 
