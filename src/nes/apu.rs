@@ -24,8 +24,8 @@ impl Apu {
             frame_counter_sequence: FrameCounterSequence::FourStep,
             cycle_count: 0,
             audio_level: 0.0,
-            pulse1: PulseChannel::new(),
-            pulse2: PulseChannel::new(),
+            pulse1: PulseChannel::new(true),
+            pulse2: PulseChannel::new(false),
             triangle: TriangleChannel::new(),
         }
     }
@@ -78,7 +78,9 @@ impl Apu {
 
     fn step_half_frame_clock(&mut self) {
         self.pulse1.step_length_counter_clock();
+        self.pulse1.step_sweep_clock();
         self.pulse2.step_length_counter_clock();
+        self.pulse2.step_sweep_clock();
         self.triangle.step_length_counter_clock();
     }
 
@@ -97,6 +99,9 @@ impl Apu {
             0x4000 => {
                 self.pulse1.set_control1(value);
             }
+            0x4001 => {
+                self.pulse1.setup_sweep(value);
+            }
             0x4002 => {
                 self.pulse1.set_timer_max_low(value);
             }
@@ -105,6 +110,9 @@ impl Apu {
             }
             0x4004 => {
                 self.pulse2.set_control1(value);
+            }
+            0x4005 => {
+                self.pulse2.setup_sweep(value);
             }
             0x4006 => {
                 self.pulse2.set_timer_max_low(value);
@@ -257,6 +265,73 @@ impl LengthCounter {
     }
 }
 
+struct Sweep {
+    enabled: bool,
+    timer_max: u8,
+    timer: u8,
+    negate: bool,
+    shift_count: u8,
+    reload_flag: bool,
+    muted: bool,
+    extra_minus_one: bool,
+}
+
+impl Sweep {
+    fn new(extra_minus_one: bool) -> Sweep {
+        Sweep {
+            enabled: false,
+            timer_max: 0,
+            timer: 0,
+            negate: false,
+            shift_count: 0,
+            reload_flag: false,
+            muted: false,
+            extra_minus_one: extra_minus_one,
+        }
+    }
+
+    fn step_clock(&mut self, period: &mut u16) {
+        let target_period = if self.shift_count == 0 {
+            *period
+        }
+        else {
+            let mut change_amount: i16 = (*period as i16) >> self.shift_count as i16;
+            if self.negate {
+                change_amount = -change_amount;
+                if self.extra_minus_one {
+                    change_amount -= 1;
+                }
+            }
+            (*period as i16 + change_amount) as u16
+        };
+        self.muted = target_period > 0x7FF || *period < 8;
+
+        if self.timer == 0 && self.enabled && !self.muted{
+            *period = target_period;
+        }
+
+        if self.timer == 0 || self.reload_flag {
+            self.timer = self.timer_max;
+            self.reload_flag = false;
+        }
+        else {
+            self.timer -= 1;
+        }
+    }
+
+    fn is_muted(&self) -> bool {
+        return self.muted;
+    }
+
+    fn setup(&mut self, value: u8) {
+        self.enabled = value & 0b1000_0000 != 0;
+        self.timer_max = (value & 0b0111_0000) >> 4;
+        self.negate = value & 0b0000_1000 != 0;
+        self.shift_count = value & 0b0000_0111;
+        self.reload_flag = true;
+    }
+}
+
 struct PulseChannel {
     duty_cycle: usize,
     timer_max: u16,
@@ -264,6 +339,7 @@ struct PulseChannel {
     sequence_index: usize,
     envelope: Envelope,
     length_counter: LengthCounter,
+    sweep: Sweep,
     pub output_level: u8,
 }
 
@@ -275,7 +351,7 @@ impl PulseChannel {
         [1, 0, 0, 1, 1, 1, 1, 1],
     ];
 
-    fn new() -> PulseChannel {
+    fn new(extra_minus_one: bool) -> PulseChannel {
         PulseChannel {
             duty_cycle: 0,
             timer_max: 0,
@@ -283,6 +359,7 @@ impl PulseChannel {
             sequence_index: 0,
             envelope: Envelope::new(),
             length_counter: LengthCounter::new(),
+            sweep: Sweep::new(extra_minus_one),
             output_level: 0,
         }
     }
@@ -301,7 +378,7 @@ impl PulseChannel {
         } else {
             self.timer -= 1
         }
-        if self.length_counter.is_zero() {
+        if self.length_counter.is_zero() || self.sweep.is_muted() {
             self.output_level = 0;
         }
     }
@@ -329,12 +406,20 @@ impl PulseChannel {
         self.length_counter.set_enabled(enabled);
     }
 
+    fn setup_sweep(&mut self, value: u8) {
+        self.sweep.setup(value);
+    }
+
     fn step_envelope_clock(&mut self) {
         self.envelope.step_clock();
     }
 
     fn step_length_counter_clock(&mut self) {
         self.length_counter.step_clock();
+    }
+
+    fn step_sweep_clock(&mut self) {
+        self.sweep.step_clock(&mut self.timer_max);
     }
 }
 
