@@ -99,13 +99,13 @@ impl Machine {
                 self.ppu.cycle_count, self.ppu.scan_line)
     }
     
-    fn step_cycle(&mut self, count: u16) -> bool {
-        self.apu.step_cycle(count);
+    fn step_cycle(&mut self, count: u16) -> (bool, bool) {
+        let irq_triggered = self.apu.step_cycle(count);
         let old_nmi_line = self.nmi_line;
         let cart = self.cartridge.as_mut().unwrap();
         self.nmi_line = self.ppu.step_cycle(count, cart);
         let nmi_triggered = old_nmi_line && !self.nmi_line;
-        nmi_triggered
+        (nmi_triggered, irq_triggered)
     }
 
     pub fn get_audio_queue_size_ms(&self) -> usize {

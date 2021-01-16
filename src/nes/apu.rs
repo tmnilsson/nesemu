@@ -10,6 +10,7 @@ enum FrameCounterSequence {
 pub struct Apu {
     output_sample_generator: OutputSampleGenerator,
     frame_counter_sequence: FrameCounterSequence,
+    interrupt_inhibit_flag: bool,
     cycle_count: u64,
     audio_level: f32,
     pulse1: PulseChannel,
@@ -22,6 +23,7 @@ impl Apu {
         Apu {
             output_sample_generator: OutputSampleGenerator::new(sdl_context),
             frame_counter_sequence: FrameCounterSequence::FourStep,
+            interrupt_inhibit_flag: false,
             cycle_count: 0,
             audio_level: 0.0,
             pulse1: PulseChannel::new(true),
@@ -30,7 +32,8 @@ impl Apu {
         }
     }
 
-    pub fn step_cycle(&mut self, count: u16) {
+    pub fn step_cycle(&mut self, count: u16) -> bool {
+        let mut irq_triggered = false;
         for _ in 0..count {
             self.triangle.update_level();
             if self.cycle_count % 2 == 0 {
@@ -56,6 +59,11 @@ impl Apu {
                     else if self.cycle_count == 3728*2+1 || self.cycle_count == 11185*2+1 {
                         self.step_quarter_frame_clock();
                     }
+                    if self.cycle_count == 0 || self.cycle_count >= 14914*2 {
+                        if !self.interrupt_inhibit_flag {
+                            irq_triggered = true;
+                        }
+                    }
                 }
                 FrameCounterSequence::FiveStep => {
                     if self.cycle_count == 7456*2+1 || self.cycle_count == 18640*2+1 {
@@ -68,6 +76,7 @@ impl Apu {
                 }
             }
         }
+        irq_triggered
     }
 
     fn step_quarter_frame_clock(&mut self) {
@@ -140,6 +149,7 @@ impl Apu {
                 } else {
                     FrameCounterSequence::FiveStep
                 };
+                self.interrupt_inhibit_flag = value & 0b0100_0000 != 0;
             }
             _ => { }
         }

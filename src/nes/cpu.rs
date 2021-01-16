@@ -42,6 +42,7 @@ pub struct Cpu {
     reg: Registers,
     instructions: HashMap<u8, Instruction>,
     nmi_triggered: bool,
+    irq_triggered: bool,
 }
 
 #[derive(Debug)]
@@ -75,6 +76,7 @@ impl Cpu {
             reg: Registers { pc:0, sp:0xfd, a:0, x:0, y:0, status:0x24 },
             instructions: Cpu::add_instructions(),
             nmi_triggered: false,
+            irq_triggered: false,
         }
     }
 
@@ -602,7 +604,9 @@ impl Cpu {
     }
 
     fn step_cycle(&mut self, m: &mut Machine, count: u16) {
-        self.nmi_triggered = m.step_cycle(count);
+        let (nmi_triggered, irq_triggered) = m.step_cycle(count);
+        self.nmi_triggered = nmi_triggered;
+        self.irq_triggered = irq_triggered;
     }
 
     fn compute_sbc(&mut self, a: u8, m: u8) {
@@ -635,6 +639,10 @@ impl Cpu {
         if self.nmi_triggered {
             self.nmi_triggered = false;
             self.perform_interrupt(m, 0xfffa, 0xfffb, true);
+        }
+        else if self.irq_triggered {
+            self.irq_triggered = false;
+            self.perform_interrupt(m, 0xfffe, 0xffff, true);
         }
         else {
             self.execute_instruction(m);
