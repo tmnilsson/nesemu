@@ -642,7 +642,9 @@ impl Cpu {
         }
         else if self.irq_triggered {
             self.irq_triggered = false;
-            self.perform_interrupt(m, 0xfffe, 0xffff, true);
+            if !self.get_status_flag(StatusFlag::InterruptDisable) {
+                self.perform_interrupt(m, 0xfffe, 0xffff, true);
+            }
         }
         else {
             self.execute_instruction(m);
