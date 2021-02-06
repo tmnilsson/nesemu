@@ -35,6 +35,7 @@ pub struct Ppu {
     secondary_oam: [u8; 32],
     oam_addr: u8,
     reg: Registers,
+    last_written_value: u8,
     bg_pattern_table_addr: u16,
     sprite_pattern_table_addr: u16,
     sprite_height: u8,
@@ -98,6 +99,7 @@ impl Ppu {
                              bg_pattern_upper: 0, bg_pattern_lower: 0,
                              bg_attribute_latch: 0,
                              bg_attribute_upper: 0, bg_attribute_lower: 0 },
+            last_written_value: 0,
             bg_pattern_table_addr: 0x0000,
             sprite_pattern_table_addr: 0x0000,
             sprite_height: 8,
@@ -297,7 +299,7 @@ impl Ppu {
         let background_index = self.get_background_pixel();
         let (sprite_index, prio, sprite0) = self.get_sprite_pixel(cartridge);
         let index = if sprite_index & 0x3 != 0 && background_index & 0x3 != 0 {
-            if sprite0 {
+            if sprite0 && self.cycle_count != 255 {
                 self.sprite0_hit = true;
             }
             if prio == SpritePriority::Front {
@@ -504,6 +506,7 @@ impl Ppu {
                     self.vblank = false;
                     self.reg.w = false;
                 }
+                value |= self.last_written_value & 0b0001_1111;
                 value
             }
             0x2004 => {
@@ -531,6 +534,7 @@ impl Ppu {
 
     pub fn write_mem(&mut self, cpu_address: u16, value: u8,
                      cartridge: &mut cartridge::Cartridge) {
+        self.last_written_value = value;
         match cpu_address {
             0x2000 => {
                 self.vram_addr_increment = if (value & 0x04) == 0 { 1 } else { 32 };
