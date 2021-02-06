@@ -11,6 +11,7 @@ struct Registers {
     t: u16,
     x: u8,
     w: bool,
+    vram_read_buffer: u8,
     bg_pattern_upper: u16,
     bg_pattern_lower: u16,
     bg_attribute_latch: u8,
@@ -96,6 +97,7 @@ impl Ppu {
             secondary_oam: [0xFF; 32],
             oam_addr: 0,
             reg: Registers { t: 0, v: 0, x: 0, w: false,
+                             vram_read_buffer: 0,
                              bg_pattern_upper: 0, bg_pattern_lower: 0,
                              bg_attribute_latch: 0,
                              bg_attribute_upper: 0, bg_attribute_lower: 0 },
@@ -520,9 +522,10 @@ impl Ppu {
             0x2007 => {
                 if self.mem_read_mut_enabled {
                     let addr = self.reg.v;
-                    let value = self.read_mem_ppu(addr, cartridge);
                     self.reg.v += self.vram_addr_increment;
-                    value
+                    let return_value = self.reg.vram_read_buffer;
+                    self.reg.vram_read_buffer = self.read_mem_ppu(addr, cartridge);
+                    return_value
                 }
                 else {
                     0
