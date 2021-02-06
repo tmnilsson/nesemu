@@ -119,23 +119,27 @@ impl Cpu {
         ((self.get_op(m, 2) as u16) << 8) + self.get_op(m, 1) as u16
     }
 
-    fn decode_instruction(&self, m: &mut Machine) -> String {
+    fn decode_instruction(&self, m: &mut Machine) -> (String, usize) {
         m.ppu.mem_read_mut_enabled = false;
+        m.controller.mem_read_mut_enabled = false;
         let op_code = m.read_mem(self.reg.pc);
         let instr = match self.instructions.get(&op_code) {
             Some(instr) => instr,
-            None => { return format!("{:02X}        {:32}", op_code, "<unknown>")},
+            None => { return (format!("{:02X}        {:32}", op_code, "<unknown>"), 1)},
         };
         let mut code_str = format!("{:02X}", instr.op_code);
+        let mut size = 1;
         if instr.addressing_mode != AddressingMode::Implied &&
             instr.addressing_mode != AddressingMode::Accumulator {
             code_str += &format!(" {:02X}", self.get_op(m, 1));
+            size = 2;
         }
         if instr.addressing_mode == AddressingMode::Absolute ||
             instr.addressing_mode == AddressingMode::Indirect ||
             instr.addressing_mode == AddressingMode::AbsoluteX ||
             instr.addressing_mode == AddressingMode::AbsoluteY {
             code_str += &format!(" {:02X}", self.get_op(m, 2));
+            size = 3;
         }
 
         let mut disass_str = String::new();
@@ -225,8 +229,9 @@ impl Cpu {
             }
         }
         m.ppu.mem_read_mut_enabled = true;
+        m.controller.mem_read_mut_enabled = true;
         let result = format!("{:8} {:33}", code_str, disass_str);
-        result
+        (result, size)
     }
 
     fn push(&mut self, m: &mut Machine, value: u8) {
@@ -1355,9 +1360,25 @@ impl Cpu {
         let reg_str = format!("A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X}",
                               self.reg.a, self.reg.x, self.reg.y,
                               self.reg.status, self.reg.sp);
-        let instr_str = self.decode_instruction(sys);
+        let (instr_str, _size) = self.decode_instruction(sys);
         
         format!("{:04X}  {}{}", self.reg.pc, instr_str, reg_str)
+    }
+
+    pub fn disassemble(&mut self, sys: &mut Machine, start: usize, end: usize) -> Vec<String> {
+        let orig_pc = self.reg.pc;
+        self.reg.pc = start as u16;
+        let mut result = vec![];
+        loop {
+            let (instr_str, size) = self.decode_instruction(sys);
+            result.push(format!("{:04X}  {}", self.reg.pc, instr_str));
+            if self.reg.pc as usize + size > end {
+                break;
+            }
+            self.reg.pc += size as u16;
+        }
+        self.reg.pc = orig_pc;
+        return result;
     }
 
 }

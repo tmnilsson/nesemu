@@ -15,6 +15,7 @@ pub struct Controller {
     key_state: [bool; 8],
     strobe: bool,
     key_index: u8,
+    pub mem_read_mut_enabled: bool,
 }
 
 impl Controller {
@@ -23,6 +24,7 @@ impl Controller {
             key_state: [false; 8],
             strobe: false,
             key_index: 0,
+            mem_read_mut_enabled: true,
         }
     }
 
@@ -56,6 +58,9 @@ impl Controller {
     }
 
     pub fn read_mem(&mut self, cpu_address: u16) -> u8 {
+        if !self.mem_read_mut_enabled {
+            return 0;
+        }
         match cpu_address {
             0x4016 => {
                 if self.strobe {

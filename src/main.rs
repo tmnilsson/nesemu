@@ -92,9 +92,21 @@ fn main()
     let mut machine = nes::Machine::new(false);
     let mut cpu = nes::cpu::Cpu::new();
     let args: Vec<_> = env::args().collect();
+
     let cartridge = nes::cartridge::Cartridge::load(Path::new(&args[1]));
     machine.load_cartridge(cartridge);
     cpu.reset(&mut machine);
+
+    if args.len() >= 3 && args[2] == "disassemble" {
+        for line in cpu.disassemble(
+            &mut machine,
+            usize::from_str_radix(&args[3], 16).unwrap(),
+            usize::from_str_radix(&args[4], 16).unwrap(),
+        ) {
+            println!("{}", line);
+        }
+        return;
+    }
 
     let mut prev_time = PreciseTime::now();
     let mut frame_index = 0;
