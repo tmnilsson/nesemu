@@ -12,7 +12,7 @@ use sdl2::keyboard::Keycode;
 
 pub struct Machine {
     pub ppu: ppu::Ppu,
-    apu: apu::Apu,
+    pub apu: apu::Apu,
     pub controller: controller::Controller,
     ram: Vec<u8>,
     nmi_line: bool,

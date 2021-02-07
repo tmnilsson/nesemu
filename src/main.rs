@@ -2,7 +2,7 @@ extern crate sdl2;
 extern crate time;
 
 use std::env;
-use time::{Duration, PreciseTime};
+use time::Duration;
 
 mod nes;
 
@@ -58,35 +58,6 @@ fn nestest_rom() {
     test_nestest_rom(false);
 }
 
-fn sleep_frame(machine: &nes::Machine, prev_time: PreciseTime, frame_index: usize) {
-    // The expected frame time is 16.67 ms (since the NES used 60 fps),
-    // but if we blindly sleep to match that we will slowly get out of sync,
-    // which could result in audio gaps/blips. Instead dynamically adjust the
-    // emulation speed to make sure that the audio sample queue always is
-    // kept large enough (but not too large which would cause extra latency)
-
-    if frame_index < 100 {
-        // Let the audio queue to fill up in the beginning,
-        // to avoid gaps while it is still not full
-        return;
-    }
-
-    let now = PreciseTime::now();
-    let duration = prev_time.to(now);
-    let duration_target = if machine.get_audio_queue_size_ms() > 50 {
-        18  // slightly slow down
-    } else {
-        15  // slightly speed up
-    };
-    let sleep_time = if duration.num_milliseconds() < duration_target {
-        Duration::milliseconds(duration_target) - duration
-    } else {
-        println!("Warning: exceeded time budget (duration {} ms)", duration.num_milliseconds());
-        Duration::milliseconds(0)
-    };
-    std::thread::sleep(sleep_time.to_std().unwrap());
-}
-
 fn main()
 {
     let mut machine = nes::Machine::new(false);
@@ -108,8 +79,6 @@ fn main()
         return;
     }
 
-    let mut prev_time = PreciseTime::now();
-    let mut frame_index = 0;
     'running: loop {
         match machine.handle_events() {
             Some(ref e) if *e == nes::SystemEvent::Quit => {
@@ -120,16 +89,19 @@ fn main()
             }
             None | Some(_) => {}
         }
-        while machine.ppu.vblank {
+        let prev_quarter_frame_count = machine.apu.quarter_frame_count;
+        while machine.apu.quarter_frame_count == prev_quarter_frame_count {
+            let prev_vblank = machine.ppu.vblank;
             cpu.execute(&mut machine);
+            if machine.ppu.vblank && !prev_vblank {
+                machine.present();
+            }
         }
-        while !machine.ppu.vblank {
-            cpu.execute(&mut machine);
+        const TARGET_BUFFER_SIZE_MS: i64 = 35;
+        let sleep_time = machine.get_audio_queue_size_ms() as i64 - TARGET_BUFFER_SIZE_MS;
+        if sleep_time > 0 {
+            std::thread::sleep(Duration::milliseconds(sleep_time).to_std().unwrap());
         }
-        machine.present();
-        sleep_frame(&machine, prev_time, frame_index);
-        prev_time = PreciseTime::now();
-        frame_index += 1;
     }
 
     machine.save();

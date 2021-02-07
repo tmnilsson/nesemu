@@ -12,6 +12,7 @@ pub struct Apu {
     frame_counter_sequence: FrameCounterSequence,
     interrupt_inhibit_flag: bool,
     cycle_count: u64,
+    pub quarter_frame_count: u64,
     audio_level: f32,
     pulse1: PulseChannel,
     pulse2: PulseChannel,
@@ -25,6 +26,7 @@ impl Apu {
             frame_counter_sequence: FrameCounterSequence::FourStep,
             interrupt_inhibit_flag: false,
             cycle_count: 0,
+            quarter_frame_count: 0,
             audio_level: 0.0,
             pulse1: PulseChannel::new(true),
             pulse2: PulseChannel::new(false),
@@ -80,6 +82,7 @@ impl Apu {
     }
 
     fn step_quarter_frame_clock(&mut self) {
+        self.quarter_frame_count += 1;
         self.pulse1.step_envelope_clock();
         self.pulse2.step_envelope_clock();
         self.triangle.step_linear_counter_clock();
