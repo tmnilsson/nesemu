@@ -62,12 +62,15 @@ impl Ppu {
     pub fn new(sdl_context: &mut sdl2::Sdl, show_name_table: bool) -> Ppu {
         let video_subsystem = sdl_context.video().unwrap();
 
-        let window = video_subsystem.window("nesemu", 256, 240)
+        const SCALE_FACTOR: u32 = 2;
+
+        let window = video_subsystem.window("nesemu", 256 * SCALE_FACTOR, 240 * SCALE_FACTOR)
             .position_centered()
             .build()
             .unwrap();
 
-        let renderer = window.into_canvas().build().unwrap();
+        let mut renderer = window.into_canvas().build().unwrap();
+        renderer.set_scale(SCALE_FACTOR as f32, SCALE_FACTOR as f32).unwrap();
 
         let renderer_nametable = if show_name_table {
             let window = video_subsystem.window("nametable", 512, 480)
