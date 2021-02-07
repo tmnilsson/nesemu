@@ -434,7 +434,7 @@ impl Ppu {
                         }
                     }
                 }
-                if self.scan_line >= 0 && self.scan_line < 240 && self.cycle_count < 256 {
+                if self.scan_line >= 8 && self.scan_line < 232 && self.cycle_count < 256 {
                     self.draw_pixel(cartridge);
                 }
                 if self.cycle_count < 336 {
